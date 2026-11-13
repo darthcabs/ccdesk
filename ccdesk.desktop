@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ccdesk
+GenericName=Claude Code
+Comment=Native Claude Code client for personal and work accounts
+Exec=ccdesk
+Icon=ccdesk
+Categories=Development;
+StartupWMClass=ccdesk

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2f3a"/>
+      <stop offset="1" stop-color="#16181e"/>
+    </linearGradient>
+    <linearGradient id="front" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6aa1ff"/>
+      <stop offset="1" stop-color="#3b6fe0"/>
+    </linearGradient>
+    <linearGradient id="back" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb35c"/>
+      <stop offset="1" stop-color="#e8743b"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <!-- back bubble -->
+  <path d="M112 44h80a28 28 0 0 1 28 28v52a28 28 0 0 1-28 28h-6v22l-26-22h-48a28 28 0 0 1-28-28V72a28 28 0 0 1 28-28z" fill="url(#back)"/>
+  <!-- front bubble -->
+  <path d="M64 92h88a28 28 0 0 1 28 28v56a28 28 0 0 1-28 28H96l-30 26v-26h-2a28 28 0 0 1-28-28v-56a28 28 0 0 1 28-28z" fill="url(#front)" stroke="#16181e" stroke-width="6"/>
+  <!-- prompt -->
+  <path d="M68 128l22 20-22 20" fill="none" stroke="#fff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="102" y="160" width="40" height="11" rx="5.5" fill="#fff"/>
+</svg>
