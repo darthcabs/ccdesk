@@ -132,6 +132,9 @@ type wlSeat struct {
 	offers map[*C.struct_wl_data_offer][]string
 	// clipboard is the wl_data_offer for the clipboard.
 	clipboard *C.struct_wl_data_offer
+	// dnd is the wl_data_offer of an external drag in progress (ccdesk patch).
+	dnd     *C.struct_wl_data_offer
+	dndMime string
 	// mimeType is the chosen mime type of clipboard.
 	mimeType string
 	// source represents the clipboard content of the most recent
@@ -139,6 +142,8 @@ type wlSeat struct {
 	source *C.struct_wl_data_source
 	// content is the data belonging to source.
 	content []byte
+	// html is offered as text/html alongside content (ccdesk patch).
+	html []byte
 }
 
 type repeatState struct {
@@ -287,7 +292,17 @@ func newWLWindow(callbacks *callbacks, options []Option) error {
 	return nil
 }
 
-func (d *wlDisplay) writeClipboard(content []byte) error {
+// RichClipboardMime is a pseudo mime type: the data is HTML + "\x00" + plain text,
+// and both are offered on the clipboard (ccdesk patch).
+const RichClipboardMime = "application/x-ccdesk-rich"
+
+func (d *wlDisplay) writeClipboard(mime string, content []byte) error {
+	var html []byte
+	if mime == RichClipboardMime {
+		if i := bytes.IndexByte(content, 0); i >= 0 {
+			html, content = content[:i], content[i+1:]
+		}
+	}
 	s := d.seat
 	if s == nil {
 		return nil
@@ -302,8 +317,13 @@ func (d *wlDisplay) writeClipboard(content []byte) error {
 		return nil
 	}
 	s.content = content
+	s.html = html
 	s.source = C.wl_data_device_manager_create_data_source(d.dataDeviceManager)
 	C.wl_data_source_add_listener(s.source, &C.gio_data_source_listener, unsafe.Pointer(s.seat))
+	if html != nil {
+		C.wl_data_source_offer(s.source, C.CString("text/html"))
+		C.wl_data_source_offer(s.source, C.CString("text/plain;charset=utf-8"))
+	}
 	for _, mime := range clipboardMimeTypes {
 		C.wl_data_source_offer(s.source, C.CString(mime))
 	}
@@ -476,7 +496,7 @@ func gio_onSeatCapabilities(data unsafe.Pointer, seat *C.struct_wl_seat, caps C.
 // content.
 func (s *wlSeat) flushOffers() {
 	for o := range s.offers {
-		if o == s.clipboard {
+		if o == s.clipboard || o == s.dnd {
 			continue
 		}
 		// We're only interested in clipboard offers.
@@ -753,15 +773,71 @@ func gio_onDataDeviceOffer(data unsafe.Pointer, dataDev *C.struct_wl_data_device
 	s.offers[id] = nil
 }
 
+// ExternalDragHook is called when an external drag with acceptable data enters
+// (true) or leaves/finishes (false) a window. ccdesk patch.
+var ExternalDragHook func(active bool)
+
+// ExternalDropHook receives data dropped from another application. It is called
+// from a background goroutine. ccdesk patch.
+var ExternalDropHook func(mimeType string, data []byte)
+
+var dndMimeTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif", "text/uri-list", "text/plain;charset=utf-8", "text/plain"}
+
 //export gio_onDataDeviceEnter
 func gio_onDataDeviceEnter(data unsafe.Pointer, dataDev *C.struct_wl_data_device, serial C.uint32_t, surf *C.struct_wl_surface, x, y C.wl_fixed_t, id *C.struct_wl_data_offer) {
 	s := callbackLoad(data).(*wlSeat)
 	s.serial = serial
+	s.dropDnd()
+	s.dnd = id
 	s.flushOffers()
+	if id == nil {
+		return
+	}
+	mime := ""
+loop:
+	for _, want := range dndMimeTypes {
+		for _, got := range s.offers[id] {
+			if got == want {
+				mime = want
+				break loop
+			}
+		}
+	}
+	s.dndMime = mime
+	if mime == "" {
+		C.wl_data_offer_accept(id, serial, nil)
+		return
+	}
+	cm := C.CString(mime)
+	C.wl_data_offer_accept(id, serial, cm)
+	C.free(unsafe.Pointer(cm))
+	C.wl_data_offer_set_actions(id, C.WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY, C.WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY)
+	if ExternalDragHook != nil {
+		ExternalDragHook(true)
+	}
+}
+
+// dropDnd forgets the current drag offer (on the Wayland thread).
+func (s *wlSeat) dropDnd() {
+	if s.dnd == nil {
+		return
+	}
+	o := s.dnd
+	s.dnd = nil
+	if o != s.clipboard {
+		delete(s.offers, o)
+		callbackDelete(unsafe.Pointer(o))
+		C.wl_data_offer_destroy(o)
+	}
+	if ExternalDragHook != nil {
+		ExternalDragHook(false)
+	}
 }
 
 //export gio_onDataDeviceLeave
 func gio_onDataDeviceLeave(data unsafe.Pointer, dataDev *C.struct_wl_data_device) {
+	s := callbackLoad(data).(*wlSeat)
+	s.dropDnd()
 }
 
 //export gio_onDataDeviceMotion
@@ -770,6 +846,41 @@ func gio_onDataDeviceMotion(data unsafe.Pointer, dataDev *C.struct_wl_data_devic
 
 //export gio_onDataDeviceDrop
 func gio_onDataDeviceDrop(data unsafe.Pointer, dataDev *C.struct_wl_data_device) {
+	s := callbackLoad(data).(*wlSeat)
+	o, mime := s.dnd, s.dndMime
+	if o == nil || mime == "" || o == s.clipboard {
+		s.dropDnd()
+		return
+	}
+	// Detach the offer from Gio's bookkeeping; the goroutine below owns it now.
+	s.dnd = nil
+	delete(s.offers, o)
+	callbackDelete(unsafe.Pointer(o))
+	if ExternalDragHook != nil {
+		ExternalDragHook(false)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		C.wl_data_offer_destroy(o)
+		return
+	}
+	cm := C.CString(mime)
+	C.wl_data_offer_receive(o, cm, C.int(w.Fd()))
+	C.free(unsafe.Pointer(cm))
+	w.Close()
+	disp := s.disp.disp
+	C.wl_display_flush(disp)
+	go func() {
+		r.SetReadDeadline(time.Now().Add(10 * time.Second))
+		b, _ := io.ReadAll(io.LimitReader(r, 64<<20))
+		r.Close()
+		C.wl_data_offer_finish(o)
+		C.wl_data_offer_destroy(o)
+		C.wl_display_flush(disp)
+		if ExternalDropHook != nil && len(b) > 0 {
+			ExternalDropHook(mime, b)
+		}
+	}()
 }
 
 //export gio_onDataDeviceSelection
@@ -1078,7 +1189,7 @@ func (w *window) ReadClipboard() {
 }
 
 func (w *window) WriteClipboard(mime string, s []byte) {
-	w.disp.writeClipboard(s)
+	w.disp.writeClipboard(mime, s)
 }
 
 func (w *window) Configure(options []Option) {
@@ -1793,6 +1904,9 @@ func gio_onDataSourceTarget(data unsafe.Pointer, source *C.struct_wl_data_source
 func gio_onDataSourceSend(data unsafe.Pointer, source *C.struct_wl_data_source, mime *C.char, fd C.int32_t) {
 	s := callbackLoad(data).(*wlSeat)
 	content := s.content
+	if C.GoString(mime) == "text/html" && s.html != nil {
+		content = s.html
+	}
 	go func() {
 		defer syscall.Close(int(fd))
 		syscall.Write(int(fd), content)
