@@ -26,8 +26,10 @@ type Config struct {
 	UIScale   float32 `toml:"ui_scale"` // extra zoom factor; 0 or 1 = normal
 	Connector string  `toml:"connector"`
 	// HiddenOptions lists session settings (by name or id) not shown as dropdowns.
-	HiddenOptions []string        `toml:"hidden_options"`
-	Accounts      []AccountConfig `toml:"account"`
+	HiddenOptions []string `toml:"hidden_options"`
+	// PromptSuggestions shows Claude's predicted next prompt in the message box.
+	PromptSuggestions *bool           `toml:"prompt_suggestions"`
+	Accounts          []AccountConfig `toml:"account"`
 }
 
 func configPath() string {
@@ -86,6 +88,7 @@ func loadConfig() Config {
 		return cfg
 	}
 	var c Config
+	dirty := false
 	if _, err := toml.Decode(string(b), &c); err != nil {
 		return cfg
 	}
@@ -104,9 +107,14 @@ func loadConfig() Config {
 	if len(c.Accounts) == 0 {
 		c.Accounts = cfg.Accounts
 	}
+	if c.PromptSuggestions == nil {
+		t := true
+		c.PromptSuggestions = &t
+		dirty = true
+	}
 	if c.HiddenOptions == nil {
 		c.HiddenOptions = cfg.HiddenOptions
-		defer saveConfig(c)
+		dirty = true
 	}
 	for i := range c.Accounts {
 		if c.Accounts[i].Theme == "" {
@@ -115,6 +123,9 @@ func loadConfig() Config {
 		if c.Accounts[i].DefaultDir == "" {
 			c.Accounts[i].DefaultDir = "~"
 		}
+	}
+	if dirty {
+		saveConfig(c)
 	}
 	return c
 }
@@ -129,3 +140,5 @@ func saveConfig(c Config) error {
 	}
 	return os.WriteFile(p, buf.Bytes(), 0o644)
 }
+
+func (c Config) suggestionsOn() bool { return c.PromptSuggestions == nil || *c.PromptSuggestions }

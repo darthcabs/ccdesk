@@ -988,6 +988,23 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 			}
 		}
 	}
+	// → or Tab on an empty box takes Claude's suggested next prompt
+	if u.editor.Len() == 0 && s.Suggestion != "" && !s.Busy {
+		for {
+			ev, ok := gtx.Event(
+				key.Filter{Focus: &u.editor, Name: key.NameRightArrow},
+				key.Filter{Focus: &u.editor, Name: key.NameTab},
+			)
+			if !ok {
+				break
+			}
+			if e, ok := ev.(key.Event); ok && e.State == key.Press {
+				u.editor.SetText(s.Suggestion)
+				n := len([]rune(s.Suggestion))
+				u.editor.SetCaret(n, n)
+			}
+		}
+	}
 	matches := u.slashMatches(s)
 	if len(matches) > 0 {
 		u.slashIdx = min(u.slashIdx, len(matches)-1)
@@ -1151,6 +1168,8 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 								hint := "Message Claude (" + s.Acct.Cfg.Name + ") — Enter to send, Shift+Enter for a new line, Ctrl+V pastes images"
 								if !s.Acct.Ready {
 									hint = "Connecting to " + s.Acct.Cfg.Name + " account…"
+								} else if s.Suggestion != "" && !s.Busy {
+									hint = s.Suggestion + "   →"
 								}
 								e := material.Editor(u.th, &u.editor, hint)
 								e.TextSize = sp(u.size)

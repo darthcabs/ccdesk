@@ -39,7 +39,8 @@ type Account struct {
 	Cfg    *AccountConfig
 	Pal    Palette
 	client *ACPClient
-	Status string // "", "starting", error text
+	env    []string // environment the connector (and Claude) runs with
+	Status string   // "", "starting", error text
 	Ready  bool
 
 	Sessions []*SessionInfo
@@ -182,7 +183,9 @@ type Session struct {
 	Loading bool
 	Loaded  bool
 	Busy    bool
-	Err     string
+	// Suggestion is Claude's predicted next prompt (shown greyed in the composer).
+	Suggestion string
+	Err        string
 
 	Modes    []Mode
 	ModeID   string
@@ -256,9 +259,10 @@ type sessionUpdate struct {
 		Status  string `json:"status"`
 	} `json:"entries"`
 
-	AvailableCommands []Command      `json:"availableCommands"`
-	CurrentModeID     string         `json:"currentModeId"`
-	ConfigOptions     []ConfigOption `json:"configOptions"`
+	Meta              json.RawMessage `json:"_meta"`
+	AvailableCommands []Command       `json:"availableCommands"`
+	CurrentModeID     string          `json:"currentModeId"`
+	ConfigOptions     []ConfigOption  `json:"configOptions"`
 }
 
 func (s *Session) applyUpdate(u *sessionUpdate) {
@@ -333,18 +337,37 @@ func (s *Session) applyUpdate(u *sessionUpdate) {
 						}
 					}
 				}
-				// For tool_call the content is usually a description; for updates it's output.
+				// Content that arrives with the tool input is its description;
+				// later content is output (fenced as ```console in the connector's air mode).
 				if len(txt) > 0 {
 					joined := strings.Join(txt, "\n")
-					if u.SessionUpdate == "tool_call" {
+					hasInput := len(u.RawInput) > 0 && string(u.RawInput) != "null"
+					if u.SessionUpdate == "tool_call" || hasInput {
 						if it.Input == "" {
 							it.Input = joined
 						}
-					} else if it.Output == "" {
-						it.Output = joined
+					} else if len(u.RawOutput) == 0 || string(u.RawOutput) == "null" {
+						it.Output = stripFence(joined)
 					}
 				}
 			}
+		}
+	case "session_info_update":
+		var meta struct {
+			PromptSuggestions *struct {
+				Suggestions []struct {
+					Text string `json:"text"`
+				} `json:"suggestions"`
+			} `json:"promptSuggestions"`
+		}
+		if len(u.Meta) > 0 && json.Unmarshal(u.Meta, &meta) == nil && meta.PromptSuggestions != nil {
+			s.Suggestion = ""
+			if len(meta.PromptSuggestions.Suggestions) > 0 {
+				s.Suggestion = strings.TrimSpace(meta.PromptSuggestions.Suggestions[0].Text)
+			}
+		}
+		if u.Title != nil && strings.TrimSpace(*u.Title) != "" {
+			s.Title = strings.TrimSpace(*u.Title)
 		}
 	case "plan":
 		it := s.last()
@@ -569,6 +592,7 @@ func (app *App) startAccount(a *Account) {
 	}
 	logDir := filepath.Join(home(), ".cache", "ccdesk")
 	os.MkdirAll(logDir, 0o755)
+	a.env = env
 	c, err := StartACP(expandHome(app.cfg.Connector), env, filepath.Join(logDir, strings.ToLower(a.Cfg.Name)+".log"))
 	if err != nil {
 		app.mu.Lock()
@@ -585,6 +609,9 @@ func (app *App) startAccount(a *Account) {
 		"clientCapabilities": map[string]any{
 			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
 			"terminal": false,
+			// The connector only forwards prompt suggestions to clients using its
+			// JetBrains "air" extension. Side effect: command output arrives fenced.
+			"_meta": map[string]any{"jetbrains": map[string]any{"air": map[string]any{"version": 1, "capabilities": []string{}}}},
 		},
 		"clientInfo": map[string]any{"name": "ccdesk", "version": "0.1"},
 	}, nil)
@@ -775,7 +802,7 @@ func (app *App) openSession(info *SessionInfo) {
 			} `json:"modes"`
 			ConfigOptions []ConfigOption `json:"configOptions"`
 		}
-		err := a.client.Call("session/load", map[string]any{"sessionId": info.ID, "cwd": info.CWD, "mcpServers": []any{}}, &res)
+		err := a.client.Call("session/load", map[string]any{"sessionId": info.ID, "cwd": info.CWD, "mcpServers": []any{}, "_meta": app.sessionMeta(a)}, &res)
 		app.mu.Lock()
 		s.Loading = false
 		if err != nil {
@@ -819,6 +846,7 @@ func (app *App) sendPrompt(s *Session, text string, imgs []*Attachment) {
 		return
 	}
 	s.add(&Item{Kind: KUser, Text: text, Imgs: imgs})
+	s.Suggestion = ""
 	s.Busy = true
 	s.follow = true
 	a := s.Acct
@@ -832,7 +860,7 @@ func (app *App) sendPrompt(s *Session, text string, imgs []*Attachment) {
 				} `json:"modes"`
 				ConfigOptions []ConfigOption `json:"configOptions"`
 			}
-			err := a.client.Call("session/new", map[string]any{"cwd": s.CWD, "mcpServers": []any{}}, &res)
+			err := a.client.Call("session/new", map[string]any{"cwd": s.CWD, "mcpServers": []any{}, "_meta": app.sessionMeta(a)}, &res)
 			app.mu.Lock()
 			if err != nil {
 				s.Busy = false
@@ -982,4 +1010,34 @@ func firstN(s string, n int) string {
 		return string(r[:n])
 	}
 	return s
+}
+
+// sessionMeta passes per-session options to the connector. Claude Code only
+// generates prompt suggestions in SDK mode when this variable is set, and the
+// connector doesn't forward its own environment for it, so we pass the full env.
+func (app *App) sessionMeta(a *Account) map[string]any {
+	if !app.cfg.suggestionsOn() {
+		return nil
+	}
+	env := map[string]string{}
+	for _, kv := range a.env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	env["CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION"] = "true"
+	return map[string]any{"claudeCode": map[string]any{"options": map[string]any{"env": env}}}
+}
+
+// stripFence removes a code fence wrapping the whole text.
+func stripFence(t string) string {
+	s := strings.TrimSpace(t)
+	if !strings.HasPrefix(s, "```") || !strings.HasSuffix(s, "```") || len(s) < 6 {
+		return t
+	}
+	nl := strings.IndexByte(s, '\n')
+	if nl < 0 {
+		return t
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(s[nl+1:], "```"), "\n")
 }
