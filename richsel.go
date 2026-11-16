@@ -585,6 +585,7 @@ func (u *UI) layoutMsgText(gtx C, m *msgText) D {
 			key.FocusFilter{Target: m},
 			key.Filter{Focus: m, Name: "C", Required: key.ModShortcut},
 			key.Filter{Focus: m, Name: "A", Required: key.ModShortcut},
+			key.Filter{Focus: m, Name: key.NameEscape},
 		)
 		if !ok {
 			break
@@ -594,9 +595,14 @@ func (u *UI) layoutMsgText(gtx C, m *msgText) D {
 			pos := image.Pt(int(e.Position.X), int(e.Position.Y))
 			switch e.Kind {
 			case pointer.Press:
+				if e.Buttons == pointer.ButtonSecondary {
+					u.openTextMenu(gtx, m, pos)
+					break
+				}
 				if e.Buttons != pointer.ButtonPrimary {
 					break
 				}
+				u.menuOwner = nil
 				gtx.Execute(key.FocusCmd{Tag: m})
 				if u.selOwner != nil && u.selOwner != m {
 					u.selOwner.clear()
@@ -643,6 +649,8 @@ func (u *UI) layoutMsgText(gtx C, m *msgText) D {
 				}
 			case "A":
 				m.anchor, m.caret = 0, m.total()
+			case key.NameEscape:
+				u.menuOwner = nil
 			}
 		}
 	}
@@ -719,6 +727,9 @@ func (u *UI) layoutMsgText(gtx C, m *msgText) D {
 	event.Op(gtx.Ops, m)
 	pointer.CursorText.Add(gtx.Ops)
 	area.Pop()
+	if u.menuOwner == m {
+		u.layoutTextMenu(gtx, m)
+	}
 	return D{Size: size}
 }
 

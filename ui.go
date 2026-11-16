@@ -75,12 +75,17 @@ type UI struct {
 	ddItems map[string]*widget.Clickable
 
 	// drag and drop
-	dragOver    bool
-	editorH     int
-	testCopied  bool
-	liveItem    *Item // last item of a busy session (thinking shown expanded)
-	transcriptH int   // transcript height last frame (page size for PgUp/PgDn)
-	sideMargin  int   // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
+	dragOver      bool
+	editorH       int
+	testCopied    bool
+	liveItem      *Item    // last item of a busy session (thinking shown expanded)
+	transcriptH   int      // transcript height last frame (page size for PgUp/PgDn)
+	menuOwner     *msgText // message whose right-click menu is open
+	menuPos       image.Point
+	menu          textMenu
+	testMenuStage int
+	testMenuAt    time.Time
+	sideMargin    int // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
 }
 
 func newUI(app *App) *UI {
@@ -578,6 +583,29 @@ func (u *UI) layoutTranscript(gtx C, s *Session) D {
 				u.testCopied = true
 				break
 			}
+		}
+	}
+	// debug: CCDESK_TESTMENU=open|reply opens the context menu on the last reply
+	if tm := os.Getenv("CCDESK_TESTMENU"); tm != "" && u.testMenuStage < 2 && !s.Loading {
+		for i := len(s.Items) - 1; i >= 0; i-- {
+			it := s.Items[i]
+			if it.Kind != KAgent || len(it.mt.blocks) == 0 || it.mt.blocks[0].layKey == [3]int{} {
+				continue
+			}
+			if u.testMenuStage == 0 {
+				b := it.mt.blocks[0]
+				it.mt.anchor, it.mt.caret = b.base, b.base+len(b.plain)
+				u.selOwner, u.menuOwner, u.menuPos = &it.mt, &it.mt, b.org.Add(image.Pt(gtx.Dp(120), gtx.Dp(8)))
+				u.testMenuStage = 1
+			} else if tm == "reply" && time.Since(u.testMenuAt) > 2*time.Second {
+				u.menu.reply.Click()
+				u.testMenuStage = 2
+			}
+			if u.testMenuAt.IsZero() {
+				u.testMenuAt = time.Now()
+				go func() { time.Sleep(2500 * time.Millisecond); u.app.invalidate() }()
+			}
+			break
 		}
 	}
 	// handle item interactions
