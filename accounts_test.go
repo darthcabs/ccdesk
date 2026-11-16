@@ -65,3 +65,13 @@ func TestAccentOverride(t *testing.T) {
 		t.Fatal("text-on-accent color not recomputed")
 	}
 }
+
+func TestRedIsRed(t *testing.T) {
+	if _, err := os.Stat("/usr/share/omarchy/themes/hackerman/colors.toml"); err != nil {
+		t.Skip("Omarchy themes not installed")
+	}
+	p := LoadPalette("hackerman") // its "red" slot is green
+	if p.Red.R < 0xc0 || p.Red.G > 0x80 {
+		t.Fatalf("red is %v", p.Red)
+	}
+}

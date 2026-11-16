@@ -1242,7 +1242,7 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 								return layout.Stack{Alignment: layout.NE}.Layout(gtx,
 									layout.Stacked(func(gtx C) D { return u.thumb(gtx, p, 140, 100) }),
 									layout.Stacked(func(gtx C) D {
-										return u.button(gtx, &p.del, "✕", u.p.Accent, u.p.OnAcc, false)
+										return u.button(gtx, &p.del, "✕", u.p.Red, onColor(u.p.Red), false)
 									}),
 								)
 							})
@@ -1307,7 +1307,7 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 							layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
 							layout.Rigid(func(gtx C) D {
 								if s.Busy {
-									return u.button(gtx, &u.stopBtn, "Stop", u.p.Accent, u.p.OnAcc, false)
+									return u.button(gtx, &u.stopBtn, "Stop", u.p.Red, onColor(u.p.Red), false)
 								}
 								return u.button(gtx, &u.sendBtn, "Send", u.p.Accent, u.p.OnAcc, false)
 							}),

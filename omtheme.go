@@ -151,6 +151,9 @@ func LoadPalette(name string) Palette {
 	if p.Deep == p.Bg {
 		p.Deep = shade(p.Bg, p.Dark, 0.10)
 	}
+	// Errors, failures, Stop and Remove must read as red; some themes use their
+	// "red" slot for other hues (hackerman's is green), so use a real red.
+	p.Red = builtinPalette(p.Dark).Red
 	return p
 }
 
