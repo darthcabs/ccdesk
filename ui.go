@@ -78,7 +78,8 @@ type UI struct {
 	dragOver   bool
 	editorH    int
 	testCopied bool
-	sideMargin int // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
+	liveItem   *Item // last item of a busy session (thinking shown expanded)
+	sideMargin int   // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
 }
 
 func newUI(app *App) *UI {
@@ -604,8 +605,10 @@ func (u *UI) layoutTranscript(gtx C, s *Session) D {
 	}
 	n := len(s.Items)
 	extra := 0
+	u.liveItem = nil
 	if s.Busy {
 		extra = 1
+		u.liveItem = s.last()
 	}
 	return layout.Stack{}.Layout(gtx,
 		layout.Expanded(func(gtx C) D {
@@ -614,7 +617,7 @@ func (u *UI) layoutTranscript(gtx C, s *Session) D {
 			return l.Layout(gtx, n+extra, func(gtx C, i int) D {
 				return u.centered(gtx, func(gtx C) D {
 					if i >= n {
-						return u.label("Claude is working…  (Esc to stop)", u.size*0.8, u.p.Dim, false).Layout(gtx)
+						return u.layoutWorking(gtx, s)
 					}
 					return u.layoutItem(gtx, s.Items[i])
 				})
@@ -759,6 +762,7 @@ func (u *UI) layoutAgent(gtx C, it *Item) D {
 }
 
 func (u *UI) layoutThought(gtx C, it *Item) D {
+	live := it == u.liveItem
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return it.toggle.Layout(gtx, func(gtx C) D {
@@ -767,13 +771,19 @@ func (u *UI) layoutThought(gtx C, it *Item) D {
 				if it.expanded {
 					arrow = "▾"
 				}
-				l := u.label(arrow+" Thinking", u.size*0.8, u.p.Dim, false)
+				txt := arrow + " Thinking"
+				if live {
+					txt = "✻ Thinking…"
+				} else if !it.Started.IsZero() && !it.Ended.IsZero() {
+					txt = arrow + " Thought for " + fmtDur(it.Ended.Sub(it.Started))
+				}
+				l := u.label(txt, u.size*0.8, u.p.Dim, live)
 				l.Font.Style = font.Italic
 				return l.Layout(gtx)
 			})
 		}),
 		layout.Rigid(func(gtx C) D {
-			if !it.expanded {
+			if !it.expanded && !live {
 				return D{}
 			}
 			return layout.Inset{Left: 16, Top: 4}.Layout(gtx, func(gtx C) D {
@@ -1580,4 +1590,57 @@ func (u *UI) insertText(t string) {
 		t = " " + t
 	}
 	u.editor.Insert(t)
+}
+
+func fmtDur(d time.Duration) string {
+	sec := int(d.Round(time.Second).Seconds())
+	if sec < 60 {
+		return fmt.Sprintf("%ds", max(sec, 1))
+	}
+	return fmt.Sprintf("%dm %02ds", sec/60, sec%60)
+}
+
+func fmtTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// layoutWorking is the status line under a busy session: current activity,
+// elapsed time and context size, like the CLI's spinner line.
+func (u *UI) layoutWorking(gtx C, s *Session) D {
+	act := "Working"
+	if l := s.last(); l != nil {
+		switch l.Kind {
+		case KThought:
+			act = "Thinking"
+		case KAgent:
+			act = "Writing"
+		case KPerm:
+			if l.PermDone == "" {
+				act = "Waiting for your permission"
+			}
+		case KTool:
+			if l.Status == "pending" || l.Status == "in_progress" || l.Status == "" {
+				t := strings.ReplaceAll(firstNonEmpty(l.Title, l.ToolKind, "tool"), "\n", " ")
+				if r := []rune(t); len(r) > 70 {
+					t = string(r[:70]) + "…"
+				}
+				act = "Running: " + t
+			}
+		}
+	}
+	frames := []string{"·", "✢", "✳", "✶", "✻", "✽"}
+	el := time.Since(s.BusySince)
+	spin := frames[int(el.Seconds())%len(frames)]
+	parts := []string{act + "…", fmtDur(el)}
+	if s.Used > 0 {
+		parts = append(parts, fmtTokens(s.Used)+" tokens in context")
+	}
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(u.label(spin+"  ", u.size*0.85, u.p.Accent, true).Layout),
+		layout.Rigid(u.label(strings.Join(parts, "  ·  "), u.size*0.8, u.p.Fg, false).Layout),
+		layout.Rigid(u.label("    Esc to stop", u.size*0.75, u.p.Dim, false).Layout),
+	)
 }

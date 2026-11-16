@@ -28,8 +28,10 @@ type Config struct {
 	// HiddenOptions lists session settings (by name or id) not shown as dropdowns.
 	HiddenOptions []string `toml:"hidden_options"`
 	// PromptSuggestions shows Claude's predicted next prompt in the message box.
-	PromptSuggestions *bool           `toml:"prompt_suggestions"`
-	Accounts          []AccountConfig `toml:"account"`
+	PromptSuggestions *bool `toml:"prompt_suggestions"`
+	// ShowThinking asks Claude for thinking summaries and shows them live.
+	ShowThinking *bool           `toml:"show_thinking"`
+	Accounts     []AccountConfig `toml:"account"`
 }
 
 func configPath() string {
@@ -107,6 +109,11 @@ func loadConfig() Config {
 	if len(c.Accounts) == 0 {
 		c.Accounts = cfg.Accounts
 	}
+	if c.ShowThinking == nil {
+		t := true
+		c.ShowThinking = &t
+		dirty = true
+	}
 	if c.PromptSuggestions == nil {
 		t := true
 		c.PromptSuggestions = &t
@@ -142,3 +149,5 @@ func saveConfig(c Config) error {
 }
 
 func (c Config) suggestionsOn() bool { return c.PromptSuggestions == nil || *c.PromptSuggestions }
+
+func (c Config) thinkingOn() bool { return c.ShowThinking == nil || *c.ShowThinking }

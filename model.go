@@ -111,10 +111,12 @@ type PermOption struct {
 }
 
 type Item struct {
-	Kind  ItemKind
-	MsgID string
-	Text  string
-	Imgs  []*Attachment
+	Kind ItemKind
+	// live timing (thoughts): when it started and when the next item replaced it
+	Started, Ended time.Time
+	MsgID          string
+	Text           string
+	Imgs           []*Attachment
 
 	// tool calls
 	ToolID   string
@@ -186,6 +188,8 @@ type Session struct {
 	Loading     bool
 	Loaded      bool
 	Busy        bool
+	BusySince   time.Time
+	Used        int    // context tokens in use (from usage_update)
 	pendingNote string // notice shown once the session has (re)loaded
 	// Suggestion is Claude's predicted next prompt (shown greyed in the composer).
 	Suggestion string
@@ -218,6 +222,12 @@ func (s *Session) last() *Item {
 }
 
 func (s *Session) add(it *Item) *Item {
+	if l := s.last(); l != nil && l.Kind == KThought && !l.Started.IsZero() && l.Ended.IsZero() {
+		l.Ended = time.Now()
+	}
+	if it.Kind == KThought && s.Busy {
+		it.Started = time.Now()
+	}
 	s.Items = append(s.Items, it)
 	return it
 }
@@ -264,6 +274,7 @@ type sessionUpdate struct {
 	} `json:"entries"`
 
 	Meta              json.RawMessage `json:"_meta"`
+	Used              int             `json:"used"`
 	AvailableCommands []Command       `json:"availableCommands"`
 	CurrentModeID     string          `json:"currentModeId"`
 	ConfigOptions     []ConfigOption  `json:"configOptions"`
@@ -355,6 +366,10 @@ func (s *Session) applyUpdate(u *sessionUpdate) {
 					}
 				}
 			}
+		}
+	case "usage_update":
+		if u.Used > 0 {
+			s.Used = u.Used
 		}
 	case "session_info_update":
 		var meta struct {
@@ -593,6 +608,10 @@ func (app *App) startAccount(a *Account) {
 	env = filtered
 	if a.Cfg.ConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+expandHome(a.Cfg.ConfigDir))
+	}
+	// Without this, Claude's thinking text isn't sent at all (only the fact that it's thinking).
+	if app.cfg.thinkingOn() && os.Getenv("CLAUDE_CODE_THINKING_DISPLAY") == "" {
+		env = append(env, "CLAUDE_CODE_THINKING_DISPLAY=summarized")
 	}
 	logDir := filepath.Join(home(), ".cache", "ccdesk")
 	os.MkdirAll(logDir, 0o755)
@@ -865,6 +884,18 @@ func (app *App) sendPrompt(s *Session, text string, imgs []*Attachment) {
 	s.add(&Item{Kind: KUser, Text: text, Imgs: imgs})
 	s.Suggestion = ""
 	s.Busy = true
+	s.BusySince = time.Now()
+	go func() { // keep the elapsed-time status ticking
+		for range time.Tick(time.Second) {
+			app.mu.Lock()
+			busy := s.Busy
+			app.mu.Unlock()
+			if !busy {
+				return
+			}
+			app.invalidate()
+		}
+	}()
 	s.follow = true
 	a := s.Acct
 	go func() {
@@ -911,6 +942,9 @@ func (app *App) sendPrompt(s *Session, text string, imgs []*Attachment) {
 		err := a.client.Call("session/prompt", map[string]any{"sessionId": s.ID, "prompt": blocks}, &res)
 		app.mu.Lock()
 		s.Busy = false
+		if l := s.last(); l != nil && l.Kind == KThought && !l.Started.IsZero() && l.Ended.IsZero() {
+			l.Ended = time.Now()
+		}
 		// cancel any unanswered permission prompts
 		for _, it := range s.Items {
 			if it.Kind == KPerm && it.PermDone == "" && it.permCh != nil {
