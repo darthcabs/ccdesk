@@ -763,12 +763,14 @@ func (u *UI) layoutAgent(gtx C, it *Item) D {
 
 func (u *UI) layoutThought(gtx C, it *Item) D {
 	live := it == u.liveItem
+	// Thoughts are shown open by default; for them, the shared toggle flag means "folded".
+	open := live || !it.expanded
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx C) D {
 			return it.toggle.Layout(gtx, func(gtx C) D {
 				pointer.CursorPointer.Add(gtx.Ops)
 				arrow := "▸"
-				if it.expanded {
+				if open {
 					arrow = "▾"
 				}
 				txt := arrow + " Thinking"
@@ -783,7 +785,7 @@ func (u *UI) layoutThought(gtx C, it *Item) D {
 			})
 		}),
 		layout.Rigid(func(gtx C) D {
-			if !it.expanded && !live {
+			if !open || strings.TrimSpace(it.Text) == "" {
 				return D{}
 			}
 			return layout.Inset{Left: 16, Top: 4}.Layout(gtx, func(gtx C) D {
