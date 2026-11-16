@@ -150,7 +150,7 @@ sudo dnf install golang gcc pkgconf wayland-devel libX11-devel libxkbcommon-x11-
 ## Installation
 
 ```sh
-git clone <this repository> ccdesk
+git clone https://github.com/darthcabs/ccdesk.git
 cd ccdesk
 
 make connector   # download claude-agent-acp, verify its SHA-256, install to ~/.local/lib
