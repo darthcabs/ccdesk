@@ -20,7 +20,7 @@ func main() {
 	a := &App{cfg: cfg, sessions: map[string]*Session{}}
 	for i := range a.cfg.Accounts {
 		ac := &a.cfg.Accounts[i]
-		a.accounts = append(a.accounts, &Account{Idx: i, Cfg: ac, Pal: LoadPalette(ac.Theme)})
+		a.accounts = append(a.accounts, &Account{Idx: i, Cfg: ac, Pal: paletteFor(*ac)})
 	}
 	if len(a.accounts) == 0 {
 		log.Fatal("no accounts configured in ", configPath())
@@ -60,23 +60,42 @@ func main() {
 }
 
 // watchTheme reloads palettes that follow the current Omarchy theme when it changes.
+// watchTheme reloads palettes that follow the system: Omarchy's current theme
+// ("current") or the desktop light/dark setting ("auto").
 func watchTheme(a *App) {
 	p := filepath.Join(home(), ".local/state/omarchy/current/theme.name")
 	var last time.Time
 	if st, err := os.Stat(p); err == nil {
 		last = st.ModTime()
 	}
+	lastDark := systemDark()
 	for range time.Tick(2 * time.Second) {
-		st, err := os.Stat(p)
-		if err != nil || !st.ModTime().After(last) {
+		omarchyChanged := false
+		if st, err := os.Stat(p); err == nil && st.ModTime().After(last) {
+			last = st.ModTime()
+			omarchyChanged = true
+			time.Sleep(500 * time.Millisecond) // let the theme switch finish writing files
+		}
+		a.mu.Lock()
+		usesAuto := false
+		for _, acct := range a.accounts {
+			usesAuto = usesAuto || acct.Cfg.Theme == "auto"
+		}
+		a.mu.Unlock()
+		darkChanged := false
+		if usesAuto {
+			if d := systemDark(); d != lastDark {
+				lastDark, darkChanged = d, true
+			}
+		}
+		if !omarchyChanged && !darkChanged {
 			continue
 		}
-		last = st.ModTime()
-		time.Sleep(500 * time.Millisecond) // let the theme switch finish writing files
 		a.mu.Lock()
 		for _, acct := range a.accounts {
-			if acct.Cfg.Theme == "current" || acct.Cfg.Theme == "" {
-				acct.Pal = LoadPalette("current")
+			t := acct.Cfg.Theme
+			if (omarchyChanged && (t == "current" || t == "")) || (darkChanged && t == "auto") {
+				acct.Pal = paletteFor(*acct.Cfg)
 			}
 		}
 		a.mu.Unlock()
@@ -86,6 +105,13 @@ func watchTheme(a *App) {
 
 func run(w *app.Window, a *App, scale float32) error {
 	u := newUI(a)
+	if v := os.Getenv("CCDESK_PICKER"); v != "" { // debug: start on an account's theme picker
+		for _, acct := range a.accounts {
+			if acct.Cfg.Name == v {
+				u.openPicker(acct)
+			}
+		}
+	}
 	if v := os.Getenv("CCDESK_ACCOUNTS"); v != "" { // debug: start on the Accounts screen
 		u.openAccounts()
 		if v == "add" || v == "addsave" {

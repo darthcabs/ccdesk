@@ -85,6 +85,9 @@ type UI struct {
 	menu          textMenu
 	accts         accountsScreen
 	pickerDraft   *acctDraft // accounts-screen card that opened the theme picker
+	accentBtns    []*widget.Clickable
+	accentDefault widget.Clickable
+	accentHex     widget.Editor
 	testMenuStage int
 	testMenuAt    time.Time
 	sideMargin    int // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
@@ -601,11 +604,7 @@ func (u *UI) layoutHeader(gtx C, s *Session) D {
 				)
 			}),
 			layout.Rigid(func(gtx C) D {
-				name := a.Cfg.Theme
-				if name == "current" {
-					name = "current (" + currentThemeName() + ")"
-				}
-				return u.button(gtx, &a.themeBtn, "Theme: "+name, u.p.Bg, u.p.Dim, true)
+				return u.button(gtx, &a.themeBtn, "Theme: "+themeLabel(*a.Cfg), u.p.Bg, u.p.Dim, true)
 			}),
 		)
 	})
@@ -1345,7 +1344,11 @@ func (u *UI) centered(gtx C, w layout.Widget) D {
 
 func (u *UI) openPicker(a *Account) {
 	u.pickerAcct = a
-	u.themeNames = append([]string{"current"}, ListThemes()...)
+	u.themeNames = []string{"auto", "light", "dark"}
+	if hasOmarchy() {
+		u.themeNames = append(u.themeNames, "current")
+		u.themeNames = append(u.themeNames, ListThemes()...)
+	}
 	for _, n := range u.themeNames {
 		if u.themeBtns[n] == nil {
 			u.themeBtns[n] = new(widget.Clickable)
@@ -1354,14 +1357,22 @@ func (u *UI) openPicker(a *Account) {
 			u.palCache[n] = LoadPalette(n)
 		}
 	}
+	u.accentHex.SingleLine = true
+	u.accentHex.SetText(a.Cfg.Accent)
+}
+
+func (u *UI) setAppearance(a *Account, theme, accent string) {
+	a.Cfg.Theme, a.Cfg.Accent = theme, accent
+	a.Pal = paletteFor(*a.Cfg)
+	saveConfig(u.app.cfg)
 }
 
 func (u *UI) layoutPicker(gtx C) D {
-	app := u.app
 	a := u.pickerAcct
 	if u.pickerClose.Clicked(gtx) {
 		if u.pickerDraft != nil {
 			u.pickerDraft.theme = a.Cfg.Theme
+			u.pickerDraft.accent = a.Cfg.Accent
 			u.pickerDraft = nil
 		}
 		u.pickerAcct = nil
@@ -1369,43 +1380,149 @@ func (u *UI) layoutPicker(gtx C) D {
 	}
 	for _, n := range u.themeNames {
 		if u.themeBtns[n].Clicked(gtx) {
-			a.Cfg.Theme = n
-			a.Pal = LoadPalette(n)
-			saveConfig(app.cfg)
+			u.setAppearance(a, n, a.Cfg.Accent)
 		}
 	}
+	for len(u.accentBtns) < len(accentPresets) {
+		u.accentBtns = append(u.accentBtns, new(widget.Clickable))
+	}
+	for i, c := range accentPresets {
+		if u.accentBtns[i].Clicked(gtx) {
+			u.setAppearance(a, a.Cfg.Theme, c)
+			u.accentHex.SetText(c)
+		}
+	}
+	if u.accentDefault.Clicked(gtx) {
+		u.setAppearance(a, a.Cfg.Theme, "")
+		u.accentHex.SetText("")
+	}
+	for {
+		ev, ok := u.accentHex.Update(gtx)
+		if !ok {
+			break
+		}
+		if _, ok := ev.(widget.ChangeEvent); ok {
+			t := strings.TrimSpace(u.accentHex.Text())
+			if !strings.HasPrefix(t, "#") {
+				t = "#" + t
+			}
+			if _, ok := parseHex(t); ok && len(t) == 7 && !strings.EqualFold(t, a.Cfg.Accent) {
+				u.setAppearance(a, a.Cfg.Theme, strings.ToLower(t))
+			}
+		}
+	}
+
 	p := a.Pal
+	heading := func(t string) layout.Widget {
+		return func(gtx C) D {
+			return layout.Inset{Top: 14, Bottom: 6}.Layout(gtx, u.label(t, u.size*0.8, u.p.Dim, true).Layout)
+		}
+	}
+	themeRow := func(n string) layout.Widget {
+		return func(gtx C) D {
+			tp := u.palCache[n]
+			if isBuiltinTheme(n) {
+				tp = paletteFor(AccountConfig{Theme: n, Accent: a.Cfg.Accent})
+			}
+			label := n
+			switch n {
+			case "auto":
+				mode := "light"
+				if systemDark() {
+					mode = "dark"
+				}
+				label = "Auto — follow the system (" + mode + " now)"
+			case "light":
+				label = "Light"
+			case "dark":
+				label = "Dark"
+			case "current":
+				label = "Omarchy — current theme (" + currentThemeName() + ")"
+			}
+			return layout.Inset{Bottom: 4}.Layout(gtx, func(gtx C) D {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+				return u.hoverRow(gtx, u.themeBtns[n], a.Cfg.Theme == n, func(gtx C) D {
+					return layout.Inset{Top: 6, Bottom: 6, Left: 8, Right: 8}.Layout(gtx, func(gtx C) D {
+						return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+							layout.Rigid(func(gtx C) D { return u.swatch(gtx, tp) }),
+							layout.Rigid(layout.Spacer{Width: 14}.Layout),
+							layout.Rigid(u.label(label, u.size*0.95, u.p.Fg, a.Cfg.Theme == n).Layout),
+						)
+					})
+				})
+			})
+		}
+	}
+	accentRow := func(gtx C) D {
+		var kids []layout.FlexChild
+		dot := func(btn *widget.Clickable, c color.NRGBA, selected bool) layout.FlexChild {
+			return layout.Rigid(func(gtx C) D {
+				return layout.Inset{Right: 10}.Layout(gtx, func(gtx C) D {
+					return btn.Layout(gtx, func(gtx C) D {
+						pointer.CursorPointer.Add(gtx.Ops)
+						sz := gtx.Dp(30)
+						if selected {
+							fillRect(gtx, u.p.Fg, image.Pt(sz, sz), sz/2)
+							in := gtx.Dp(3)
+							off := op.Offset(image.Pt(in, in)).Push(gtx.Ops)
+							fillRect(gtx, u.p.Bg, image.Pt(sz-2*in, sz-2*in), (sz-2*in)/2)
+							off.Pop()
+							in = gtx.Dp(5)
+							off = op.Offset(image.Pt(in, in)).Push(gtx.Ops)
+							fillRect(gtx, c, image.Pt(sz-2*in, sz-2*in), (sz-2*in)/2)
+							off.Pop()
+						} else {
+							fillRect(gtx, c, image.Pt(sz, sz), sz/2)
+						}
+						return D{Size: image.Pt(sz, sz)}
+					})
+				})
+			})
+		}
+		for i, c := range accentPresets {
+			kids = append(kids, dot(u.accentBtns[i], hex(c), strings.EqualFold(a.Cfg.Accent, c)))
+		}
+		kids = append(kids,
+			layout.Rigid(func(gtx C) D {
+				fg := u.p.Dim
+				if a.Cfg.Accent == "" {
+					fg = u.p.Fg
+				}
+				return layout.Inset{Right: 12}.Layout(gtx, func(gtx C) D {
+					return u.button(gtx, &u.accentDefault, "Theme's own", u.p.Bg, fg, true)
+				})
+			}),
+			layout.Rigid(func(gtx C) D {
+				gtx.Constraints.Max.X = gtx.Dp(130)
+				return u.field(gtx, &u.accentHex, "#rrggbb", u.size*0.85, true, false)
+			}),
+		)
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
+	}
+
+	var rows []layout.Widget
+	rows = append(rows, heading("MODE"))
+	for _, n := range u.themeNames[:3] {
+		rows = append(rows, themeRow(n))
+	}
+	rows = append(rows, heading("ACCENT COLOR"), accentRow)
+	if len(u.themeNames) > 3 {
+		rows = append(rows, heading("OMARCHY THEMES"))
+		for _, n := range u.themeNames[3:] {
+			rows = append(rows, themeRow(n))
+		}
+	}
 	return layout.Inset{Top: 16, Left: 22, Right: 22, Bottom: 16}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, u.label("Theme for "+a.Cfg.Name+" sessions", u.size*1.2, p.Bright, true).Layout),
+					layout.Flexed(1, u.label(u.withAcct("Appearance for %s sessions", "Appearance", a), u.size*1.2, p.Bright, true).Layout),
 					layout.Rigid(func(gtx C) D { return u.button(gtx, &u.pickerClose, "Done", p.Accent, p.OnAcc, false) }),
 				)
 			}),
-			layout.Rigid(layout.Spacer{Height: 12}.Layout),
 			layout.Flexed(1, func(gtx C) D {
 				l := material.List(u.th, &u.pickerList)
-				return l.Layout(gtx, len(u.themeNames), func(gtx C, i int) D {
-					n := u.themeNames[i]
-					tp := u.palCache[n]
-					label := n
-					if n == "current" {
-						label = "current — follow Omarchy (" + currentThemeName() + ")"
-					}
-					return layout.Inset{Bottom: 4}.Layout(gtx, func(gtx C) D {
-						gtx.Constraints.Min.X = gtx.Constraints.Max.X
-						return u.hoverRow(gtx, u.themeBtns[n], a.Cfg.Theme == n, func(gtx C) D {
-							return layout.Inset{Top: 6, Bottom: 6, Left: 8, Right: 8}.Layout(gtx, func(gtx C) D {
-								return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-									layout.Rigid(func(gtx C) D { return u.swatch(gtx, tp) }),
-									layout.Rigid(layout.Spacer{Width: 14}.Layout),
-									layout.Rigid(u.label(label, u.size*0.95, u.p.Fg, a.Cfg.Theme == n).Layout),
-								)
-							})
-						})
-					})
-				})
+				return l.Layout(gtx, len(rows), func(gtx C, i int) D { return rows[i](gtx) })
 			}),
 		)
 	})
@@ -1799,4 +1916,16 @@ func (u *UI) searchBox(gtx C) D {
 			return e.Layout(gtx)
 		})
 	})
+}
+
+// themeLabel is a short description of an account's appearance.
+func themeLabel(c AccountConfig) string {
+	n := c.Theme
+	switch n {
+	case "current":
+		n = "Omarchy (" + currentThemeName() + ")"
+	case "auto", "light", "dark":
+		n = strings.ToUpper(n[:1]) + n[1:]
+	}
+	return n
 }

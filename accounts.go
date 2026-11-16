@@ -23,6 +23,7 @@ type acctDraft struct {
 	dir        widget.Editor
 	defaultDir widget.Editor
 	theme      string
+	accent     string
 	removed    bool
 
 	themeBtn, loginBtn, removeBtn widget.Clickable
@@ -52,7 +53,7 @@ func (u *UI) openAccounts() {
 	sc.drafts = nil
 	sc.list.Axis = layout.Vertical
 	for _, a := range u.app.accounts {
-		d := &acctDraft{acct: a, theme: a.Cfg.Theme}
+		d := &acctDraft{acct: a, theme: a.Cfg.Theme, accent: a.Cfg.Accent}
 		d.name = newEditor(a.Cfg.Name)
 		d.dir = newEditor(a.Cfg.ConfigDir)
 		d.defaultDir = newEditor(a.Cfg.DefaultDir)
@@ -64,9 +65,12 @@ func (u *UI) addAccountDraft() {
 	sc := &u.accts
 	var used []AccountConfig
 	for _, d := range sc.drafts {
-		used = append(used, AccountConfig{Theme: d.theme})
+		used = append(used, AccountConfig{Theme: d.theme, Accent: firstNonEmpty(d.accent, accentPresets[0])})
 	}
 	d := &acctDraft{theme: suggestTheme(used)}
+	if isBuiltinTheme(d.theme) {
+		d.accent = suggestAccent(used)
+	}
 	name := "Work"
 	for _, x := range sc.drafts {
 		if strings.EqualFold(x.name.Text(), name) {
@@ -87,6 +91,7 @@ func (d *acctDraft) config() AccountConfig {
 		ConfigDir:  strings.TrimSpace(d.dir.Text()),
 		DefaultDir: strings.TrimSpace(d.defaultDir.Text()),
 		Theme:      d.theme,
+		Accent:     d.accent,
 	}
 	if c.ConfigDir == "" && d.acct == nil {
 		c.ConfigDir = "~/.claude-" + firstNonEmpty(slug(c.Name), "account")
@@ -100,7 +105,7 @@ func (d *acctDraft) config() AccountConfig {
 		c.DefaultDir = "~"
 	}
 	if c.Theme == "" {
-		c.Theme = "current"
+		c.Theme = defaultTheme()
 	}
 	return c
 }
@@ -184,9 +189,7 @@ func (app *App) applyAccounts(drafts []*acctDraft, cfgs []AccountConfig) {
 		} else if a.Cfg.claudeDir() != c.claudeDir() {
 			restart = append(restart, a)
 		}
-		if a.Cfg == nil || a.Cfg.Theme != c.Theme {
-			a.Pal = LoadPalette(c.Theme)
-		}
+		a.Pal = paletteFor(*c)
 		a.Idx = i
 		a.Cfg = c
 		accts = append(accts, a)
@@ -294,7 +297,7 @@ func (u *UI) layoutAccounts(gtx C) D {
 }
 
 func (u *UI) accountCard(gtx C, d *acctDraft) D {
-	pal := LoadPaletteCached(u, d.theme)
+	pal := paletteFor(AccountConfig{Theme: d.theme, Accent: d.accent})
 	return layout.Inset{Bottom: 12}.Layout(gtx, func(gtx C) D {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
 		return widget.Border{Color: withAlpha(pal.Accent, 0xa0), CornerRadius: 8, Width: 1.5}.Layout(gtx, func(gtx C) D {
@@ -343,9 +346,9 @@ func (u *UI) accountCard(gtx C, d *acctDraft) D {
 								})
 							}
 							if d.acct != nil {
-								kids = append(kids, btn(&d.themeBtn, "Theme: "+d.acct.Cfg.Theme), btn(&d.loginBtn, "Log in"))
+								kids = append(kids, btn(&d.themeBtn, "Theme: "+themeLabel(*d.acct.Cfg)), btn(&d.loginBtn, "Log in"))
 							} else {
-								kids = append(kids, layout.Rigid(u.label("Theme: "+d.theme+" · save, then log in", u.size*0.78, u.p.Dim, false).Layout))
+								kids = append(kids, layout.Rigid(u.label("Theme: "+themeLabel(AccountConfig{Theme: d.theme})+" · save, then log in", u.size*0.78, u.p.Dim, false).Layout))
 							}
 							kids = append(kids, layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }))
 							kids = append(kids, layout.Rigid(func(gtx C) D { return u.button(gtx, &d.removeBtn, "Remove", u.p.Side, u.p.Red, true) }))
@@ -413,13 +416,4 @@ func (u *UI) fieldInner(gtx C, ed *widget.Editor, hint string, size float32, mon
 			return e.Layout(gtx)
 		})
 	})
-}
-
-func LoadPaletteCached(u *UI, name string) Palette {
-	if p, ok := u.palCache[name]; ok && name != "current" {
-		return p
-	}
-	p := LoadPalette(name)
-	u.palCache[name] = p
-	return p
 }

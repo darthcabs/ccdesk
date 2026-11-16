@@ -88,6 +88,18 @@ func themeDir(name string) string {
 }
 
 func LoadPalette(name string) Palette {
+	switch name {
+	case "auto":
+		p := builtinPalette(systemDark())
+		p.Name = "auto"
+		return p
+	case "light", "dark":
+		return builtinPalette(name == "dark")
+	case "", "current":
+		if !hasOmarchy() {
+			return builtinPalette(systemDark())
+		}
+	}
 	m := map[string]any{}
 	toml.DecodeFile(filepath.Join(themeDir(name), "colors.toml"), &m)
 	get := func(k string, def string) color.NRGBA {

@@ -13,8 +13,11 @@ type AccountConfig struct {
 	Name string `toml:"name"`
 	// ConfigDir is passed as CLAUDE_CONFIG_DIR. Empty = Claude's default (~/.claude).
 	ConfigDir string `toml:"config_dir"`
-	// Theme is an Omarchy theme name, or "current" to follow the system theme.
+	// Theme is "auto" (follow the system's light/dark setting), "light", "dark",
+	// an Omarchy theme name, or "current" (Omarchy's active theme).
 	Theme string `toml:"theme"`
+	// Accent overrides the theme's accent color ("#rrggbb"); empty = the theme's own.
+	Accent string `toml:"accent,omitempty"`
 	// DefaultDir is where new sessions start.
 	DefaultDir string `toml:"default_dir"`
 }
@@ -86,6 +89,9 @@ var accentThemes = []string{"tokyo-night", "everforest", "gruvbox", "rose-pine",
 
 // suggestTheme picks an installed theme not used by any of the given accounts.
 func suggestTheme(used []AccountConfig) string {
+	if !hasOmarchy() {
+		return defaultTheme() // built-in theme; accounts differ by accent instead
+	}
 	have := map[string]bool{}
 	for _, t := range ListThemes() {
 		have[t] = true
@@ -99,7 +105,7 @@ func suggestTheme(used []AccountConfig) string {
 			return t
 		}
 	}
-	return "current"
+	return defaultTheme()
 }
 
 // isClaudeDir reports whether dir looks like a Claude Code config folder.
@@ -115,7 +121,7 @@ func isClaudeDir(dir string) bool {
 // detectAccounts builds the first-run account list: Claude's default folder,
 // plus any ~/.claude-<name> folders (the usual way to keep a second account).
 func detectAccounts() []AccountConfig {
-	main := AccountConfig{Name: "Main", Theme: "current", DefaultDir: "~"}
+	main := AccountConfig{Name: "Main", Theme: defaultTheme(), DefaultDir: "~"}
 	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" && filepath.Clean(expandHome(d)) != filepath.Join(home(), ".claude") {
 		main.ConfigDir = shortenHome(d)
 	}
@@ -130,7 +136,11 @@ func detectAccounts() []AccountConfig {
 			continue
 		}
 		name := strings.ToUpper(suffix[:1]) + suffix[1:]
-		accts = append(accts, AccountConfig{Name: name, ConfigDir: shortenHome(m), Theme: suggestTheme(accts), DefaultDir: "~"})
+		ac := AccountConfig{Name: name, ConfigDir: shortenHome(m), Theme: suggestTheme(accts), DefaultDir: "~"}
+		if isBuiltinTheme(ac.Theme) {
+			ac.Accent = suggestAccent(append(accts, AccountConfig{Accent: accentPresets[0]}))
+		}
+		accts = append(accts, ac)
 	}
 	if len(accts) > 1 {
 		accts[0].Name = "Personal"
@@ -205,7 +215,7 @@ func loadConfig() Config {
 	}
 	for i := range c.Accounts {
 		if c.Accounts[i].Theme == "" {
-			c.Accounts[i].Theme = "current"
+			c.Accounts[i].Theme = defaultTheme()
 		}
 		if c.Accounts[i].DefaultDir == "" {
 			c.Accounts[i].DefaultDir = "~"

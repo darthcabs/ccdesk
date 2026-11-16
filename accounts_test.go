@@ -33,6 +33,10 @@ func TestDetectSecondAccount(t *testing.T) {
 	if len(got) != 2 || got[0].Name != "Personal" || got[1].Name != "Work" || got[1].ConfigDir != "~/.claude-work" {
 		t.Fatalf("got %+v", got)
 	}
+	// without Omarchy: both follow the system, and the second gets its own accent
+	if got[0].Theme != "auto" || got[1].Theme != "auto" || got[1].Accent == "" || got[1].Accent == accentPresets[0] {
+		t.Fatalf("themes: %+v", got)
+	}
 }
 
 func TestDraftConfig(t *testing.T) {
@@ -42,12 +46,22 @@ func TestDraftConfig(t *testing.T) {
 	d.dir = newEditor("")
 	d.defaultDir = newEditor("")
 	c := d.config()
-	if c.ConfigDir != "~/.claude-my-work" || c.DefaultDir != "~" || c.Theme != "current" {
+	if c.ConfigDir != "~/.claude-my-work" || c.DefaultDir != "~" || c.Theme != "auto" {
 		t.Fatalf("new account: %+v", c)
 	}
 	// pointing an account at ~/.claude must keep CLAUDE_CONFIG_DIR unset
 	d.dir = newEditor("~/.claude/")
 	if c := d.config(); c.ConfigDir != "" {
 		t.Fatalf("default folder stored as %q", c.ConfigDir)
+	}
+}
+
+func TestAccentOverride(t *testing.T) {
+	p := paletteFor(AccountConfig{Theme: "dark", Accent: "#22a06b"})
+	if p.Accent != hex("#22a06b") || !p.Dark {
+		t.Fatalf("got %+v", p)
+	}
+	if p.OnAcc != onColor(hex("#22a06b")) {
+		t.Fatal("text-on-accent color not recomputed")
 	}
 }
