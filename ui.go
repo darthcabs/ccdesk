@@ -75,11 +75,12 @@ type UI struct {
 	ddItems map[string]*widget.Clickable
 
 	// drag and drop
-	dragOver   bool
-	editorH    int
-	testCopied bool
-	liveItem   *Item // last item of a busy session (thinking shown expanded)
-	sideMargin int   // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
+	dragOver    bool
+	editorH     int
+	testCopied  bool
+	liveItem    *Item // last item of a busy session (thinking shown expanded)
+	transcriptH int   // transcript height last frame (page size for PgUp/PgDn)
+	sideMargin  int   // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
 }
 
 func newUI(app *App) *UI {
@@ -500,6 +501,8 @@ func (u *UI) layoutSession(gtx C, s *Session) D {
 	if a.themeBtn.Clicked(gtx) {
 		u.openPicker(a)
 	}
+	// before the composer: Flex lays out the (rigid) editor first, and it would eat PgUp/PgDn
+	u.scrollKeys(gtx, s)
 	if s != u.lastActive {
 		u.lastActive = s
 		gtx.Execute(key.FocusCmd{Tag: &u.editor})
@@ -557,6 +560,7 @@ func (u *UI) layoutTranscript(gtx C, s *Session) D {
 	if s.Loading {
 		return layout.Center.Layout(gtx, u.label("Loading conversation…", u.size, u.p.Dim, false).Layout)
 	}
+	u.transcriptH = gtx.Constraints.Max.Y
 	if len(s.Items) == 0 && s.ID == "" {
 		return layout.Center.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
@@ -1652,4 +1656,43 @@ func (u *UI) promptSize() float32 {
 		return ps
 	}
 	return u.size - 2
+}
+
+// scrollKeys: PgUp/PgDn scroll the conversation by most of a screen,
+// Ctrl+Home/Ctrl+End jump to the top/bottom. They work while typing too.
+func (u *UI) scrollKeys(gtx C, s *Session) {
+	page := u.transcriptH * 85 / 100
+	for {
+		ev, ok := gtx.Event(
+			key.Filter{Focus: &u.editor, Name: key.NamePageUp},
+			key.Filter{Focus: &u.editor, Name: key.NamePageDown},
+			key.Filter{Focus: &u.editor, Name: key.NameHome, Required: key.ModCtrl},
+			key.Filter{Focus: &u.editor, Name: key.NameEnd, Required: key.ModCtrl},
+			key.Filter{Name: key.NamePageUp},
+			key.Filter{Name: key.NamePageDown},
+			key.Filter{Name: key.NameHome, Required: key.ModCtrl},
+			key.Filter{Name: key.NameEnd, Required: key.ModCtrl},
+		)
+		if !ok {
+			break
+		}
+		e, ok := ev.(key.Event)
+		if !ok || e.State != key.Press {
+			continue
+		}
+		switch e.Name {
+		case key.NamePageUp:
+			s.list.Position.Offset -= page
+			s.list.Position.BeforeEnd = true
+		case key.NamePageDown:
+			s.list.Position.Offset += page
+		case key.NameHome:
+			s.list.ScrollTo(0)
+			s.list.Position.BeforeEnd = true
+		case key.NameEnd:
+			s.list.Position.First = len(s.Items)
+			s.list.Position.Offset = 0
+			s.list.Position.BeforeEnd = false
+		}
+	}
 }
