@@ -124,7 +124,7 @@ MCP, hooks, models) happens in Claude Code. ccdesk is the window.
 
 | | |
 |---|---|
-| **OS** | Linux with a **Wayland** compositor (developed on Hyprland; GNOME and KDE should work) |
+| **OS** | Linux with a **Wayland** compositor (developed on Hyprland; GNOME and KDE should work). Windows and macOS support is planned for future versions. |
 | **Claude** | A Claude account that works with Claude Code (Pro, Max, Team, Enterprise, or Console) |
 | **To build** | Go 1.24 or newer, a C compiler, and the Wayland, X11, EGL and Vulkan development headers that Gio needs (below) |
 | **At runtime** | `wl-clipboard` for image copy and paste · a terminal reachable through `xdg-terminal-exec` for `/login` · optional: `notify-send` (libnotify) for notifications, `gsettings` for the Auto theme |
@@ -324,8 +324,11 @@ Debugging switches, as environment variables: `CCDESK_DEBUG=1` (verbose log),
 
 ## Limitations
 
-- **Wayland only** in practice: image clipboard, drag and drop, rich copy and themed cursors rely on
-  Wayland. X11 is untested.
+- **Linux and Wayland only, for now.** Image clipboard, drag and drop, rich copy and themed
+  cursors rely on Wayland, and X11 is untested. **Windows and macOS support is planned for future
+  versions:** the interface, accounts and connector protocol are already portable, and the
+  platform-specific pieces (clipboard, drag and drop, notifications, login terminal, connector
+  install) are what's left to port.
 - **No editor.** File edits appear as diffs inside tool calls; there's no file tree or diff review
   screen.
 - **Claude asking you multiple-choice questions** (the `AskUserQuestion` tool) isn't supported yet.
