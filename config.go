@@ -77,11 +77,89 @@ func defaultConfig() Config {
 		FontSize:      18,
 		Connector:     "~/.local/lib/claude-agent-acp/current/claude-agent-acp",
 		HiddenOptions: []string{"Fast mode", "Agent"},
-		Accounts: []AccountConfig{
-			{Name: "Personal", ConfigDir: "", Theme: "current", DefaultDir: "~/Work"},
-			{Name: "Work", ConfigDir: "~/.claude-work", Theme: "tokyo-night", DefaultDir: "~/Work"},
-		},
+		Accounts:      detectAccounts(),
 	}
+}
+
+// accentThemes are suggested for extra accounts, so each account looks different.
+var accentThemes = []string{"tokyo-night", "everforest", "gruvbox", "rose-pine", "kanagawa", "nord", "catppuccin"}
+
+// suggestTheme picks an installed theme not used by any of the given accounts.
+func suggestTheme(used []AccountConfig) string {
+	have := map[string]bool{}
+	for _, t := range ListThemes() {
+		have[t] = true
+	}
+	taken := map[string]bool{}
+	for _, a := range used {
+		taken[a.Theme] = true
+	}
+	for _, t := range accentThemes {
+		if have[t] && !taken[t] {
+			return t
+		}
+	}
+	return "current"
+}
+
+// isClaudeDir reports whether dir looks like a Claude Code config folder.
+func isClaudeDir(dir string) bool {
+	for _, f := range []string{".credentials.json", "projects", "settings.json", "history.jsonl"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// detectAccounts builds the first-run account list: Claude's default folder,
+// plus any ~/.claude-<name> folders (the usual way to keep a second account).
+func detectAccounts() []AccountConfig {
+	main := AccountConfig{Name: "Main", Theme: "current", DefaultDir: "~"}
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" && filepath.Clean(expandHome(d)) != filepath.Join(home(), ".claude") {
+		main.ConfigDir = shortenHome(d)
+	}
+	accts := []AccountConfig{main}
+	matches, _ := filepath.Glob(filepath.Join(home(), ".claude-*"))
+	for _, m := range matches {
+		if st, err := os.Stat(m); err != nil || !st.IsDir() || !isClaudeDir(m) {
+			continue
+		}
+		suffix := strings.TrimPrefix(filepath.Base(m), ".claude-")
+		if suffix == "" || shortenHome(m) == main.ConfigDir {
+			continue
+		}
+		name := strings.ToUpper(suffix[:1]) + suffix[1:]
+		accts = append(accts, AccountConfig{Name: name, ConfigDir: shortenHome(m), Theme: suggestTheme(accts), DefaultDir: "~"})
+	}
+	if len(accts) > 1 {
+		accts[0].Name = "Personal"
+	}
+	return accts
+}
+
+// claudeDir is the folder an account's Claude config lives in.
+func (a AccountConfig) claudeDir() string {
+	if a.ConfigDir == "" {
+		return filepath.Join(home(), ".claude")
+	}
+	return filepath.Clean(expandHome(a.ConfigDir))
+}
+
+// slug makes a folder-friendly name ("My Work" -> "my-work").
+func slug(s string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			dash = false
+		} else if !dash && b.Len() > 0 {
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
 }
 
 func loadConfig() Config {

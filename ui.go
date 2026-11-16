@@ -83,6 +83,8 @@ type UI struct {
 	menuOwner     *msgText // message whose right-click menu is open
 	menuPos       image.Point
 	menu          textMenu
+	accts         accountsScreen
+	pickerDraft   *acctDraft // accounts-screen card that opened the theme picker
 	testMenuStage int
 	testMenuAt    time.Time
 	sideMargin    int // empty space beside the centred column (text selection extends into it) // height of the editor box last frame (for anchoring the slash popup)
@@ -256,6 +258,9 @@ func (u *UI) Layout(gtx C) D {
 					if u.pickerAcct != nil {
 						return u.layoutPicker(gtx)
 					}
+					if u.accts.open {
+						return u.layoutAccounts(gtx)
+					}
 					s := app.active
 					if s == nil && app.draftAcct != nil {
 						s = u.draftFor(app.draftAcct)
@@ -293,9 +298,18 @@ func (u *UI) layoutSidebar(gtx C) D {
 	gtx.Constraints = layout.Exact(image.Pt(w, gtx.Constraints.Max.Y))
 	fillRect(gtx, u.p.Side, gtx.Constraints.Max, 0)
 
+	multi := len(app.accounts) > 1
 	if u.refreshBtn.Clicked(gtx) {
 		for _, a := range app.accounts {
 			go app.refreshSessions(a)
+		}
+	}
+	if u.accts.gear.Clicked(gtx) {
+		u.pickerAcct = nil
+		if u.accts.open {
+			u.accts.open = false
+		} else {
+			u.openAccounts()
 		}
 	}
 	if u.filterAll.Clicked(gtx) {
@@ -306,6 +320,7 @@ func (u *UI) layoutSidebar(gtx C) D {
 			app.active = nil
 			app.draftAcct = a
 			u.pickerAcct = nil
+			u.accts.open = false
 			u.draft = nil
 			gtx.Execute(key.FocusCmd{Tag: &u.editor})
 		}
@@ -322,6 +337,7 @@ func (u *UI) layoutSidebar(gtx C) D {
 	for _, r := range rows {
 		if r.click.Clicked(gtx) {
 			u.pickerAcct = nil
+			u.accts.open = false
 			app.openSession(r)
 		}
 	}
@@ -346,7 +362,11 @@ func (u *UI) layoutSidebar(gtx C) D {
 							gtx.Constraints.Min.X = gtx.Constraints.Max.X
 							return bgBox(gtx, bg, 8, func(gtx C) D {
 								return layout.Inset{Top: 8, Bottom: 8}.Layout(gtx, func(gtx C) D {
-									return layout.Center.Layout(gtx, u.label("+ "+a.Cfg.Name, u.size*0.9, a.Pal.OnAcc, true).Layout)
+									txt := "+ " + a.Cfg.Name
+									if !multi {
+										txt = "+ New session"
+									}
+									return layout.Center.Layout(gtx, u.label(txt, u.size*0.9, a.Pal.OnAcc, true).Layout)
 								})
 							})
 						})
@@ -354,9 +374,17 @@ func (u *UI) layoutSidebar(gtx C) D {
 				}
 				return layout.Flex{}.Layout(gtx, kids...)
 			}),
-			layout.Rigid(layout.Spacer{Height: 10}.Layout),
-			// account filter chips
 			layout.Rigid(func(gtx C) D {
+				if !multi {
+					return D{}
+				}
+				return layout.Spacer{Height: 10}.Layout(gtx)
+			}),
+			// account filter chips (only with several accounts)
+			layout.Rigid(func(gtx C) D {
+				if !multi {
+					return D{}
+				}
 				chip := func(btn *widget.Clickable, txt string, on bool, acc color.NRGBA) layout.FlexChild {
 					return layout.Rigid(func(gtx C) D {
 						return layout.Inset{Right: 6}.Layout(gtx, func(gtx C) D {
@@ -398,18 +426,17 @@ func (u *UI) layoutSidebar(gtx C) D {
 				return layout.Flex{Alignment: layout.Middle}.Layout(gtx, kids...)
 			}),
 			layout.Rigid(layout.Spacer{Height: 8}.Layout),
-			// search
+			// search (with the refresh button beside it when there are no account chips)
 			layout.Rigid(func(gtx C) D {
-				return bgBox(gtx, u.p.Deep, 6, func(gtx C) D {
-					gtx.Constraints.Min.X = gtx.Constraints.Max.X
-					return layout.Inset{Top: 6, Bottom: 6, Left: 10, Right: 10}.Layout(gtx, func(gtx C) D {
-						e := material.Editor(u.th, &u.search, "Search sessions")
-						e.TextSize = sp(u.size * 0.85)
-						e.Color = u.p.Fg
-						e.HintColor = u.p.Dim
-						e.SelectionColor = withAlpha(u.p.Accent, 0x60)
-						return e.Layout(gtx)
-					})
+				if multi {
+					return u.searchBox(gtx)
+				}
+				return layout.Inset{Top: 10}.Layout(gtx, func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Flexed(1, u.searchBox),
+						layout.Rigid(layout.Spacer{Width: 6}.Layout),
+						layout.Rigid(func(gtx C) D { return u.button(gtx, &u.refreshBtn, "↻", u.p.Side, u.p.Dim, true) }),
+					)
 				})
 			}),
 			layout.Rigid(layout.Spacer{Height: 8}.Layout),
@@ -439,7 +466,18 @@ func (u *UI) layoutSidebar(gtx C) D {
 					}
 					parts = append(parts, fmt.Sprintf("%d sessions", n))
 				}
-				return layout.Inset{Top: 6}.Layout(gtx, u.label(strings.Join(parts, " · "), u.size*0.72, u.p.Dim, false).Layout)
+				return layout.Inset{Top: 6}.Layout(gtx, func(gtx C) D {
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Flexed(1, u.label(strings.Join(parts, " · "), u.size*0.72, u.p.Dim, false).Layout),
+						layout.Rigid(func(gtx C) D {
+							fg := u.p.Dim
+							if u.accts.open {
+								fg = u.p.Accent
+							}
+							return u.button(gtx, &u.accts.gear, "⚙ Accounts", u.p.Side, fg, true)
+						}),
+					)
+				})
 			}),
 		)
 	})
@@ -469,7 +507,11 @@ func (u *UI) sessionRow(gtx C, r *SessionInfo) D {
 								return l.Layout(gtx)
 							}),
 							layout.Rigid(func(gtx C) D {
-								l := u.label(fmt.Sprintf("%s · %s · %s", r.Acct.Cfg.Name, shortenHome(r.CWD), relTime(r.Updated)), u.size*0.7, u.p.Dim, false)
+								meta := fmt.Sprintf("%s · %s", shortenHome(r.CWD), relTime(r.Updated))
+								if len(app.accounts) > 1 {
+									meta = r.Acct.Cfg.Name + " · " + meta
+								}
+								l := u.label(meta, u.size*0.7, u.p.Dim, false)
 								l.MaxLines = 1
 								return l.Layout(gtx)
 							}),
@@ -477,7 +519,9 @@ func (u *UI) sessionRow(gtx C, r *SessionInfo) D {
 					})
 					call := m.Stop()
 					// stripe in the session's account color, full row height
-					fillRect(gtx, r.Acct.Pal.Accent, image.Pt(gtx.Dp(4), d.Size.Y), gtx.Dp(2))
+					if len(app.accounts) > 1 {
+						fillRect(gtx, r.Acct.Pal.Accent, image.Pt(gtx.Dp(4), d.Size.Y), gtx.Dp(2))
+					}
 					call.Add(gtx.Ops)
 					return d
 				}),
@@ -524,11 +568,17 @@ func (u *UI) layoutHeader(gtx C, s *Session) D {
 	a := s.Acct
 	return layout.Inset{Top: 10, Bottom: 10, Left: 18, Right: 14}.Layout(gtx, func(gtx C) D {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			// account pill
+			// account pill (just the plan when there's only one account)
 			layout.Rigid(func(gtx C) D {
+				multi := len(u.app.accounts) > 1
+				if !multi && a.Plan == "" {
+					return D{}
+				}
 				return bgBox(gtx, u.p.Accent, 6, func(gtx C) D {
 					txt := strings.ToUpper(a.Cfg.Name)
-					if a.Plan != "" {
+					if !multi {
+						txt = a.Plan
+					} else if a.Plan != "" {
 						txt += "  ·  " + a.Plan
 					}
 					return layout.Inset{Top: 3, Bottom: 3, Left: 10, Right: 10}.Layout(gtx,
@@ -569,7 +619,7 @@ func (u *UI) layoutTranscript(gtx C, s *Session) D {
 	if len(s.Items) == 0 && s.ID == "" {
 		return layout.Center.Layout(gtx, func(gtx C) D {
 			return layout.Flex{Axis: layout.Vertical, Alignment: layout.Middle}.Layout(gtx,
-				layout.Rigid(u.label("New "+s.Acct.Cfg.Name+" session", u.size*1.2, u.p.Bright, true).Layout),
+				layout.Rigid(u.label(u.withAcct("New %s session", "New session", s.Acct), u.size*1.2, u.p.Bright, true).Layout),
 				layout.Rigid(layout.Spacer{Height: 6}.Layout),
 				layout.Rigid(u.label("Choose the folder below, then type your first message.", u.size*0.85, u.p.Dim, false).Layout),
 			)
@@ -1213,7 +1263,7 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 							return layout.Inset{Top: 10, Bottom: 10, Left: 14, Right: 14}.Layout(gtx, func(gtx C) D {
 								gtx.Constraints.Min.X = gtx.Constraints.Max.X
 								gtx.Constraints.Max.Y = gtx.Dp(260)
-								hint := "Message Claude (" + s.Acct.Cfg.Name + ") — Enter to send, Shift+Enter for a new line, Ctrl+V pastes images"
+								hint := u.withAcct("Message Claude (%s)", "Message Claude", s.Acct) + " — Enter to send, Shift+Enter for a new line, Ctrl+V pastes images"
 								if !s.Acct.Ready {
 									hint = "Connecting to " + s.Acct.Cfg.Name + " account…"
 								} else if s.Suggestion != "" && !s.Busy {
@@ -1310,6 +1360,10 @@ func (u *UI) layoutPicker(gtx C) D {
 	app := u.app
 	a := u.pickerAcct
 	if u.pickerClose.Clicked(gtx) {
+		if u.pickerDraft != nil {
+			u.pickerDraft.theme = a.Cfg.Theme
+			u.pickerDraft = nil
+		}
 		u.pickerAcct = nil
 		return D{}
 	}
@@ -1723,4 +1777,26 @@ func (u *UI) scrollKeys(gtx C, s *Session) {
 			s.list.Position.BeforeEnd = false
 		}
 	}
+}
+
+// withAcct names the account only when there's more than one.
+func (u *UI) withAcct(multiFmt, single string, a *Account) string {
+	if len(u.app.accounts) > 1 {
+		return fmt.Sprintf(multiFmt, a.Cfg.Name)
+	}
+	return single
+}
+
+func (u *UI) searchBox(gtx C) D {
+	return bgBox(gtx, u.p.Deep, 6, func(gtx C) D {
+		gtx.Constraints.Min.X = gtx.Constraints.Max.X
+		return layout.Inset{Top: 6, Bottom: 6, Left: 10, Right: 10}.Layout(gtx, func(gtx C) D {
+			e := material.Editor(u.th, &u.search, "Search sessions")
+			e.TextSize = sp(u.size * 0.85)
+			e.Color = u.p.Fg
+			e.HintColor = u.p.Dim
+			e.SelectionColor = withAlpha(u.p.Accent, 0x60)
+			return e.Layout(gtx)
+		})
+	})
 }

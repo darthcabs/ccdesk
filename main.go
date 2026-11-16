@@ -86,6 +86,21 @@ func watchTheme(a *App) {
 
 func run(w *app.Window, a *App, scale float32) error {
 	u := newUI(a)
+	if v := os.Getenv("CCDESK_ACCOUNTS"); v != "" { // debug: start on the Accounts screen
+		u.openAccounts()
+		if v == "add" || v == "addsave" {
+			u.addAccountDraft()
+		}
+		if v == "addsave" {
+			go func() {
+				time.Sleep(4 * time.Second)
+				a.mu.Lock()
+				u.saveAccounts()
+				a.mu.Unlock()
+				a.invalidate()
+			}()
+		}
+	}
 	app.ExternalDragHook = func(active bool) {
 		a.mu.Lock()
 		u.dragOver = active

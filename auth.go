@@ -41,7 +41,13 @@ func (app *App) handleLocalCommand(s *Session, text string) bool {
 		if len(fields) > 1 && strings.EqualFold(fields[1], "console") {
 			method = "console-login"
 		}
-		app.login(s, method)
+		app.login(s.Acct, method, func(text string, isErr bool) {
+			k := KNotice
+			if isErr {
+				k = KError
+			}
+			s.add(&Item{Kind: k, Text: text})
+		})
 		return true
 	case "/logout":
 		app.logout(s)
@@ -50,10 +56,11 @@ func (app *App) handleLocalCommand(s *Session, text string) bool {
 	return false
 }
 
-func (app *App) login(s *Session, methodID string) {
-	a := s.Acct
+// login runs the account's login command in a terminal. note reports progress
+// (called with the app lock held).
+func (app *App) login(a *Account, methodID string, note func(text string, isErr bool)) {
 	if a.loggingIn {
-		s.add(&Item{Kind: KNotice, Text: "A login for " + a.Cfg.Name + " is already open in a terminal."})
+		note("A login for "+a.Cfg.Name+" is already open in a terminal.", false)
 		return
 	}
 	var m *AuthMethod
@@ -64,7 +71,7 @@ func (app *App) login(s *Session, methodID string) {
 		}
 	}
 	if m == nil || m.Meta.TerminalAuth == nil {
-		s.add(&Item{Kind: KError, Text: "The connector didn't offer a login method (" + methodID + ")."})
+		note("The connector didn't offer a login method ("+methodID+").", true)
 		return
 	}
 	// Pin the account explicitly: a terminal may be an already-running instance
@@ -87,12 +94,12 @@ func (app *App) login(s *Session, methodID string) {
 	term := exec.Command("xdg-terminal-exec", "sh", "-c", script)
 	term.Env = a.env
 	if err := term.Start(); err != nil {
-		s.add(&Item{Kind: KError, Text: "Could not open a terminal for login: " + err.Error()})
+		note("Could not open a terminal for login: "+err.Error(), true)
 		return
 	}
 	go term.Wait()
 	a.loggingIn = true
-	s.add(&Item{Kind: KNotice, Text: "Opened a terminal to log in to the " + a.Cfg.Name + " account. Finish there; ccdesk reconnects when it's done."})
+	note("Opened a terminal to log in to the "+a.Cfg.Name+" account. Finish there; ccdesk reconnects when it's done.", false)
 	go func() {
 		deadline := time.Now().Add(20 * time.Minute)
 		for time.Now().Before(deadline) {

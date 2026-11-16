@@ -43,6 +43,7 @@ type Account struct {
 	// AuthMethods are the connector's login commands (run in a terminal).
 	AuthMethods []AuthMethod
 	loggingIn   bool
+	LoginNote   string // last login message, shown on the Accounts screen
 	Status      string // "", "starting", error text
 	Ready       bool
 
@@ -573,7 +574,8 @@ type App struct {
 	toastUntil time.Time
 }
 
-func skey(a *Account, id string) string { return fmt.Sprintf("%d/%s", a.Idx, id) }
+// skey keys open sessions by account identity (indexes change when accounts are edited).
+func skey(a *Account, id string) string { return fmt.Sprintf("%p/%s", a, id) }
 
 func (app *App) notifyUser(title, body string) {
 	if app.focused {
