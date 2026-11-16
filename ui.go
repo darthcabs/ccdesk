@@ -1188,7 +1188,7 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 									hint = s.Suggestion + "   →"
 								}
 								e := material.Editor(u.th, &u.editor, hint)
-								e.TextSize = sp(u.size)
+								e.TextSize = sp(u.promptSize())
 								e.Color = u.p.Bright
 								e.HintColor = u.p.Dim
 								e.SelectionColor = withAlpha(u.p.Accent, 0x60)
@@ -1645,4 +1645,11 @@ func (u *UI) layoutWorking(gtx C, s *Session) D {
 		layout.Rigid(u.label(strings.Join(parts, "  ·  "), u.size*0.8, u.p.Fg, false).Layout),
 		layout.Rigid(u.label("    Esc to stop", u.size*0.75, u.p.Dim, false).Layout),
 	)
+}
+
+func (u *UI) promptSize() float32 {
+	if ps := u.app.cfg.PromptFontSize; ps > 0 {
+		return ps
+	}
+	return u.size - 2
 }

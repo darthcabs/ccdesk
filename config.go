@@ -20,11 +20,13 @@ type AccountConfig struct {
 }
 
 type Config struct {
-	Font      string  `toml:"font"`
-	MonoFont  string  `toml:"mono_font"`
-	FontSize  float32 `toml:"font_size"`
-	UIScale   float32 `toml:"ui_scale"` // extra zoom factor; 0 or 1 = normal
-	Connector string  `toml:"connector"`
+	Font     string  `toml:"font"`
+	MonoFont string  `toml:"mono_font"`
+	FontSize float32 `toml:"font_size"`
+	// PromptFontSize is the message box's text size; 0 = font_size - 2.
+	PromptFontSize float32 `toml:"prompt_font_size"`
+	UIScale        float32 `toml:"ui_scale"` // extra zoom factor; 0 or 1 = normal
+	Connector      string  `toml:"connector"`
 	// HiddenOptions lists session settings (by name or id) not shown as dropdowns.
 	HiddenOptions []string `toml:"hidden_options"`
 	// PromptSuggestions shows Claude's predicted next prompt in the message box.
