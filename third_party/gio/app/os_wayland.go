@@ -46,6 +46,11 @@ import (
 //go:generate sed -i "1s;^;//go:build ((linux \\&\\& !android) || freebsd) \\&\\& !nowayland\\n\\n;" wayland_xdg_shell.c
 //go:generate sed -i "1s;^;//go:build ((linux \\&\\& !android) || freebsd) \\&\\& !nowayland\\n\\n;" wayland_xdg_decoration.c
 //go:generate sed -i "1s;^;//go:build ((linux \\&\\& !android) || freebsd) \\&\\& !nowayland\\n\\n;" wayland_text_input.c
+// ccdesk patch: cursor-shape-v1 (the compositor draws themed cursors). tablet-v2 code is only
+// linked because cursor-shape references its interface.
+//go:generate wayland-scanner client-header /usr/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml wayland_cursor_shape.h
+//go:generate wayland-scanner private-code /usr/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml wayland_cursor_shape.c
+//go:generate wayland-scanner private-code /usr/share/wayland-protocols/stable/tablet/tablet-v2.xml wayland_tablet.c
 
 /*
 #cgo linux pkg-config: wayland-client wayland-cursor
@@ -59,6 +64,7 @@ import (
 #include "wayland_text_input.h"
 #include "wayland_xdg_shell.h"
 #include "wayland_xdg_decoration.h"
+#include "wayland_cursor_shape.h"
 
 extern const struct wl_registry_listener gio_registry_listener;
 extern const struct wl_surface_listener gio_surface_listener;
@@ -88,6 +94,7 @@ type wlDisplay struct {
 	shm               *C.struct_wl_shm
 	dataDeviceManager *C.struct_wl_data_device_manager
 	decor             *C.struct_zxdg_decoration_manager_v1
+	cursorShapeMgr    *C.struct_wp_cursor_shape_manager_v1
 	seat              *wlSeat
 	xkb               *xkb.Context
 	outputMap         map[C.uint32_t]*C.struct_wl_output
@@ -130,6 +137,8 @@ type wlSeat struct {
 	// offers is a map from active wl_data_offers to
 	// the list of mime types they support.
 	offers map[*C.struct_wl_data_offer][]string
+	// cursorShape sets compositor-drawn cursors for pointer (ccdesk patch).
+	cursorShape *C.struct_wp_cursor_shape_device_v1
 	// clipboard is the wl_data_offer for the clipboard.
 	clipboard *C.struct_wl_data_offer
 	// dnd is the wl_data_offer of an external drag in progress (ccdesk patch).
@@ -186,8 +195,10 @@ type window struct {
 		// such as border resizes and window moves. It
 		// is nil if the pointer is not in a system gesture
 		// area.
-		system  *C.struct_wl_cursor
-		surf    *C.struct_wl_surface
+		system *C.struct_wl_cursor
+		surf   *C.struct_wl_surface
+		// names maps loaded cursors back to their kind, for cursor-shape-v1.
+		names   map[*C.struct_wl_cursor]pointer.Cursor
 		cursors struct {
 			pointer         *C.struct_wl_cursor
 			resizeNorth     *C.struct_wl_cursor
@@ -466,6 +477,13 @@ func (w *window) loadCursor(name pointer.Cursor) *C.struct_wl_cursor {
 	if c == nil {
 		// Fall back to default cursor.
 		c = w.cursor.cursors.pointer
+	} else {
+		if w.cursor.names == nil {
+			w.cursor.names = make(map[*C.struct_wl_cursor]pointer.Cursor)
+		}
+		if _, ok := w.cursor.names[c]; !ok {
+			w.cursor.names[c] = name
+		}
 	}
 	return c
 }
@@ -518,6 +536,7 @@ func (s *wlSeat) destroy() {
 	s.imFocus = nil
 	s.resetTextInputState()
 	if s.pointer != nil {
+		s.dropCursorShape()
 		C.wl_pointer_release(s.pointer)
 	}
 	if s.touch != nil {
@@ -561,6 +580,7 @@ func (s *wlSeat) updateCaps(caps C.uint32_t) {
 		s.pointer = C.wl_seat_get_pointer(s.seat)
 		C.wl_pointer_add_listener(s.pointer, &C.gio_pointer_listener, unsafe.Pointer(s.seat))
 	case s.pointer != nil && caps&C.WL_SEAT_CAPABILITY_POINTER == 0:
+		s.dropCursorShape()
 		C.wl_pointer_release(s.pointer)
 		s.pointer = nil
 	}
@@ -738,6 +758,8 @@ func gio_onRegistryGlobal(data unsafe.Pointer, reg *C.struct_wl_registry, name C
 		d.shm = (*C.struct_wl_shm)(C.wl_registry_bind(reg, name, &C.wl_shm_interface, 1))
 	case "xdg_wm_base":
 		d.wm = (*C.struct_xdg_wm_base)(C.wl_registry_bind(reg, name, &C.xdg_wm_base_interface, 1))
+	case "wp_cursor_shape_manager_v1":
+		d.cursorShapeMgr = (*C.struct_wp_cursor_shape_manager_v1)(C.wl_registry_bind(reg, name, &C.wp_cursor_shape_manager_v1_interface, 1))
 	case "zxdg_decoration_manager_v1":
 		d.decor = (*C.struct_zxdg_decoration_manager_v1)(C.wl_registry_bind(reg, name, &C.zxdg_decoration_manager_v1_interface, 1))
 	case "zwp_text_input_manager_v3":
@@ -1329,6 +1351,13 @@ func (w *window) setCursor(pointer *C.struct_wl_pointer, serial C.uint32_t) {
 	if c == nil {
 		C.wl_pointer_set_cursor(pointer, serial, nil, 0, 0)
 		return
+	}
+	// ccdesk patch: let the compositor draw the cursor from its own theme.
+	if dev := w.disp.cursorShapeDevice(pointer); dev != nil {
+		if shape, ok := cursorShapes[w.cursor.names[c]]; ok {
+			C.wp_cursor_shape_device_v1_set_shape(dev, serial, C.uint32_t(shape))
+			return
+		}
 	}
 	// Get images[0].
 	img := *c.images
@@ -2332,4 +2361,38 @@ func fromFixed(v C.wl_fixed_t) float32 {
 	b := ((1023 + 44) << 52) + (1 << 51) + uint64(v)
 	f := math.Float64frombits(b) - (3 << 43)
 	return float32(f)
+}
+
+// cursorShapes maps Gio cursors to wp_cursor_shape_device_v1 shapes (ccdesk patch).
+var cursorShapes = map[pointer.Cursor]uint32{
+	pointer.CursorDefault: 1, pointer.CursorText: 9, pointer.CursorVerticalText: 10,
+	pointer.CursorPointer: 4, pointer.CursorCrosshair: 8, pointer.CursorAllScroll: 32,
+	pointer.CursorColResize: 30, pointer.CursorRowResize: 31, pointer.CursorGrab: 16,
+	pointer.CursorGrabbing: 17, pointer.CursorNotAllowed: 15, pointer.CursorWait: 6,
+	pointer.CursorProgress: 5, pointer.CursorNorthWestResize: 21, pointer.CursorNorthEastResize: 20,
+	pointer.CursorSouthWestResize: 24, pointer.CursorSouthEastResize: 23,
+	pointer.CursorNorthSouthResize: 27, pointer.CursorEastWestResize: 26,
+	pointer.CursorWestResize: 25, pointer.CursorEastResize: 18, pointer.CursorNorthResize: 19,
+	pointer.CursorSouthResize: 22, pointer.CursorNorthEastSouthWestResize: 28,
+	pointer.CursorNorthWestSouthEastResize: 29,
+}
+
+// cursorShapeDevice returns (creating on first use) the cursor-shape device for
+// the seat's pointer, or nil when the compositor lacks cursor-shape-v1.
+func (d *wlDisplay) cursorShapeDevice(ptr *C.struct_wl_pointer) *C.struct_wp_cursor_shape_device_v1 {
+	s := d.seat
+	if d.cursorShapeMgr == nil || s == nil || ptr == nil || ptr != s.pointer {
+		return nil
+	}
+	if s.cursorShape == nil {
+		s.cursorShape = C.wp_cursor_shape_manager_v1_get_pointer(d.cursorShapeMgr, ptr)
+	}
+	return s.cursorShape
+}
+
+func (s *wlSeat) dropCursorShape() {
+	if s.cursorShape != nil {
+		C.wp_cursor_shape_device_v1_destroy(s.cursorShape)
+		s.cursorShape = nil
+	}
 }
