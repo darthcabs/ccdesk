@@ -674,6 +674,20 @@ func (u *UI) layoutTranscript(gtx C, s *Session) D {
 				u.app.setToast("Copied image")
 			}
 		}
+		if it.Kind == KMissingDir {
+			if it.actA.Clicked(gtx) {
+				if err := os.MkdirAll(it.Text, 0o755); err != nil {
+					u.app.setToast("Could not create the folder: " + err.Error())
+				} else {
+					u.app.reopenSession(s)
+					return D{}
+				}
+			}
+			if it.actB.Clicked(gtx) {
+				u.app.removeSession(s)
+				return D{}
+			}
+		}
 		for _, o := range it.PermOpts {
 			if o.btn.Clicked(gtx) && it.PermDone == "" {
 				it.PermDone = o.Name
@@ -734,6 +748,8 @@ func (u *UI) layoutItem(gtx C, it *Item) D {
 		return u.layoutPlan(gtx, it)
 	case KPerm:
 		return u.layoutPerm(gtx, it)
+	case KMissingDir:
+		return u.layoutMissingDir(gtx, it)
 	case KError:
 		return u.label(it.Text, u.size*0.85, u.p.Red, false).Layout(gtx)
 	default:
@@ -1928,4 +1944,37 @@ func themeLabel(c AccountConfig) string {
 		n = strings.ToUpper(n[:1]) + n[1:]
 	}
 	return n
+}
+
+// layoutMissingDir explains that a session's folder is gone and offers fixes.
+func (u *UI) layoutMissingDir(gtx C, it *Item) D {
+	gtx.Constraints.Min.X = gtx.Constraints.Max.X
+	return borderBox(gtx, withAlpha(u.p.Dim, 0x90), 8, 1, func(gtx C) D {
+		return layout.UniformInset(14).Layout(gtx, func(gtx C) D {
+			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+				layout.Rigid(u.label("This conversation's project folder no longer exists", u.size, u.p.Bright, true).Layout),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Top: 4, Bottom: 6}.Layout(gtx, func(gtx C) D {
+						l := u.label(shortenHome(it.Text), u.size*0.9, u.p.Fg, false)
+						l.Font = u.font(false, false, true)
+						return l.Layout(gtx)
+					})
+				}),
+				layout.Rigid(u.label("Claude Code can only open a session inside its folder. Recreate the folder (empty) to open "+
+					"and continue the conversation, or remove the session from the list. Removing keeps its file on disk.",
+					u.size*0.82, u.p.Dim, false).Layout),
+				layout.Rigid(func(gtx C) D {
+					return layout.Inset{Top: 12}.Layout(gtx, func(gtx C) D {
+						return layout.Flex{}.Layout(gtx,
+							layout.Rigid(func(gtx C) D {
+								return u.button(gtx, &it.actA, "Recreate the folder and open", u.p.Accent, u.p.OnAcc, false)
+							}),
+							layout.Rigid(layout.Spacer{Width: 8}.Layout),
+							layout.Rigid(func(gtx C) D { return u.button(gtx, &it.actB, "Remove from list", u.p.Bg, u.p.Fg, true) }),
+						)
+					})
+				}),
+			)
+		})
+	})
 }

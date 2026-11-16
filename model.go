@@ -71,6 +71,7 @@ const (
 	KNotice
 	KError
 	KPerm
+	KMissingDir // the session's project folder is gone (Text = path)
 )
 
 type Attachment struct {
@@ -137,12 +138,13 @@ type Item struct {
 	PermTitle string
 
 	// UI state
-	expanded bool
-	toggle   widget.Clickable
-	copyBtn  widget.Clickable
-	mt       msgText
-	outSel   widget.Selectable
-	inSel    widget.Selectable
+	expanded   bool
+	toggle     widget.Clickable
+	copyBtn    widget.Clickable
+	actA, actB widget.Clickable // buttons on KMissingDir
+	mt         msgText
+	outSel     widget.Selectable
+	inSel      widget.Selectable
 }
 
 type Mode struct {
@@ -825,9 +827,14 @@ func (app *App) openSession(info *SessionInfo) {
 		return
 	}
 	s := newSession(a, info.ID, info.CWD, info.Title)
-	s.Loading = true
 	app.sessions[k] = s
 	app.active = s
+	// Claude Code refuses to open a session whose folder no longer exists.
+	if st, err := os.Stat(info.CWD); err != nil || !st.IsDir() {
+		s.add(&Item{Kind: KMissingDir, Text: info.CWD})
+		return
+	}
+	s.Loading = true
 	go func() {
 		var res struct {
 			Modes *struct {
@@ -1093,4 +1100,34 @@ func stripFence(t string) string {
 		return t
 	}
 	return strings.TrimSuffix(strings.TrimSuffix(s[nl+1:], "```"), "\n")
+}
+
+// reopenSession forgets an open session and loads it again.
+func (app *App) reopenSession(s *Session) {
+	delete(app.sessions, skey(s.Acct, s.ID))
+	info := &SessionInfo{ID: s.ID, CWD: s.CWD, Title: s.Title, Acct: s.Acct}
+	for _, si := range s.Acct.Sessions {
+		if si.ID == s.ID {
+			info = si
+		}
+	}
+	app.openSession(info)
+}
+
+// removeSession hides a session from the list (the connector archives it;
+// the transcript file stays on disk).
+func (app *App) removeSession(s *Session) {
+	a, id := s.Acct, s.ID
+	delete(app.sessions, skey(a, id))
+	if app.active == s {
+		app.active = nil
+	}
+	go func() {
+		if err := a.client.Call("session/delete", map[string]any{"sessionId": id}, nil); err != nil {
+			app.mu.Lock()
+			app.setToast("Could not remove the session: " + err.Error())
+			app.mu.Unlock()
+		}
+		app.refreshSessions(a)
+	}()
 }
