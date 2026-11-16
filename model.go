@@ -40,8 +40,11 @@ type Account struct {
 	Pal    Palette
 	client *ACPClient
 	env    []string // environment the connector (and Claude) runs with
-	Status string   // "", "starting", error text
-	Ready  bool
+	// AuthMethods are the connector's login commands (run in a terminal).
+	AuthMethods []AuthMethod
+	loggingIn   bool
+	Status      string // "", "starting", error text
+	Ready       bool
 
 	Sessions []*SessionInfo
 	Plan     string         // e.g. "Claude Pro", from the connector's auth status
@@ -174,15 +177,16 @@ type Command struct {
 }
 
 type Session struct {
-	Acct    *Account
-	ID      string
-	CWD     string
-	Title   string
-	Items   []*Item
-	byTool  map[string]*Item
-	Loading bool
-	Loaded  bool
-	Busy    bool
+	Acct        *Account
+	ID          string
+	CWD         string
+	Title       string
+	Items       []*Item
+	byTool      map[string]*Item
+	Loading     bool
+	Loaded      bool
+	Busy        bool
+	pendingNote string // notice shown once the session has (re)loaded
 	// Suggestion is Claude's predicted next prompt (shown greyed in the composer).
 	Suggestion string
 	Err        string
@@ -604,6 +608,9 @@ func (app *App) startAccount(a *Account) {
 	c.OnNotify = func(method string, params json.RawMessage) { app.onNotify(a, method, params) }
 	c.OnRequest = func(method string, params json.RawMessage) (any, *rpcError) { return app.onRequest(a, method, params) }
 	a.client = c
+	var initRes struct {
+		AuthMethods []AuthMethod `json:"authMethods"`
+	}
 	err = c.Call("initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
@@ -611,16 +618,22 @@ func (app *App) startAccount(a *Account) {
 			"terminal": false,
 			// The connector only forwards prompt suggestions to clients using its
 			// JetBrains "air" extension. Side effect: command output arrives fenced.
-			"_meta": map[string]any{"jetbrains": map[string]any{"air": map[string]any{"version": 1, "capabilities": []string{}}}},
+			// terminal-auth: the connector returns the exact login commands, which
+			// ccdesk runs in a terminal for /login.
+			"_meta": map[string]any{
+				"jetbrains":     map[string]any{"air": map[string]any{"version": 1, "capabilities": []string{}}},
+				"terminal-auth": true,
+			},
 		},
 		"clientInfo": map[string]any{"name": "ccdesk", "version": "0.1"},
-	}, nil)
+	}, &initRes)
 	app.mu.Lock()
 	if err != nil {
 		a.Status = "initialize failed: " + err.Error()
 	} else {
 		a.Status = ""
 		a.Ready = true
+		a.AuthMethods = initRes.AuthMethods
 	}
 	app.mu.Unlock()
 	app.invalidate()
@@ -820,6 +833,10 @@ func (app *App) openSession(info *SessionInfo) {
 				s.Config = res.ConfigOptions
 				a.LastCfg = res.ConfigOptions
 			}
+		}
+		if s.pendingNote != "" {
+			s.add(&Item{Kind: KNotice, Text: s.pendingNote})
+			s.pendingNote = ""
 		}
 		s.list.Position.BeforeEnd = false
 		if os.Getenv("CCDESK_DEBUG") != "" {

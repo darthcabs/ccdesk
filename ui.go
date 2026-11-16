@@ -1099,9 +1099,13 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 			u.draft = nil
 			u.lastActive = s
 		}
-		app.sendPrompt(s, u.editor.Text(), u.pending)
-		u.editor.SetText("")
-		u.pending = nil
+		if len(u.pending) == 0 && app.handleLocalCommand(s, u.editor.Text()) {
+			u.editor.SetText("")
+		} else {
+			app.sendPrompt(s, u.editor.Text(), u.pending)
+			u.editor.SetText("")
+			u.pending = nil
+		}
 	}
 
 	return layout.Inset{Bottom: 14, Top: 4}.Layout(gtx, func(gtx C) D {
@@ -1334,6 +1338,10 @@ func (u *UI) slashMatches(s *Session) []Command {
 	if len(cmds) == 0 {
 		cmds = s.Acct.Commands
 	}
+	cmds = append([]Command{
+		{Name: "login", Description: "Log in to this account (opens a terminal; add \"console\" for API billing)"},
+		{Name: "logout", Description: "Log out of this account"},
+	}, cmds...)
 	q := strings.ToLower(t[1:])
 	var pre, sub []Command
 	for _, c := range cmds {
