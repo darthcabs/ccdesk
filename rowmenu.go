@@ -128,4 +128,3 @@ func (u *UI) renameRow(gtx C, r *SessionInfo) D {
 		return u.field(gtx, &u.renameEd, "Session title", u.size*0.88, false, false)
 	})
 }
-
