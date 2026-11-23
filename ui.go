@@ -12,6 +12,7 @@ import (
 
 	"gioui.org/font"
 	"gioui.org/io/clipboard"
+	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
@@ -83,6 +84,12 @@ type UI struct {
 	menuOwner     *msgText // message whose right-click menu is open
 	menuPos       image.Point
 	menu          textMenu
+	rowMenu       *SessionInfo // session whose right-click menu is open
+	rowMenuPos    image.Point
+	rowMenuW      rowMenu
+	renaming      *SessionInfo
+	renameEd      widget.Editor
+	testRowDone   bool
 	accts         accountsScreen
 	pickerDraft   *acctDraft // accounts-screen card that opened the theme picker
 	accentBtns    []*widget.Clickable
@@ -337,6 +344,14 @@ func (u *UI) layoutSidebar(gtx C) D {
 	}
 
 	rows := app.allSessions(u.filterIdx, u.search.Text())
+	if v := os.Getenv("CCDESK_TESTROWMENU"); v != "" && !u.testRowDone && len(rows) > 1 { // debug
+		u.testRowDone = true
+		if v == "rename" {
+			u.startRename(gtx, rows[1])
+		} else {
+			u.rowMenu, u.rowMenuPos = rows[1], image.Pt(gtx.Dp(90), gtx.Dp(20))
+		}
+	}
 	for _, r := range rows {
 		if r.click.Clicked(gtx) {
 			u.pickerAcct = nil
@@ -489,9 +504,15 @@ func (u *UI) layoutSidebar(gtx C) D {
 func (u *UI) sessionRow(gtx C, r *SessionInfo) D {
 	app := u.app
 	selected := app.active != nil && app.active.Acct == r.Acct && app.active.ID == r.ID
+	u.rowMenuEvents(gtx, r)
+	if u.renaming == r {
+		return u.renameRow(gtx, r)
+	}
 	return layout.Inset{Bottom: 2}.Layout(gtx, func(gtx C) D {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
-		return u.hoverRow(gtx, &r.click, selected, func(gtx C) D {
+		// record the row so a right-click area can enclose it (keeping the row clickable)
+		m := op.Record(gtx.Ops)
+		d := u.hoverRow(gtx, &r.click, selected, func(gtx C) D {
 			return layout.Flex{}.Layout(gtx,
 				// account stripe
 				layout.Rigid(func(gtx C) D {
@@ -530,6 +551,15 @@ func (u *UI) sessionRow(gtx C, r *SessionInfo) D {
 				}),
 			)
 		})
+		call := m.Stop()
+		area := clip.Rect{Max: d.Size}.Push(gtx.Ops)
+		event.Op(gtx.Ops, r)
+		call.Add(gtx.Ops)
+		area.Pop()
+		if u.rowMenu == r {
+			u.layoutRowMenu(gtx, r)
+		}
+		return d
 	})
 }
 

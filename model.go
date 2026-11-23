@@ -1117,11 +1117,16 @@ func (app *App) reopenSession(s *Session) {
 // removeSession hides a session from the list (the connector archives it;
 // the transcript file stays on disk).
 func (app *App) removeSession(s *Session) {
-	a, id := s.Acct, s.ID
-	delete(app.sessions, skey(a, id))
-	if app.active == s {
+	app.removeSessionByID(s.Acct, s.ID)
+}
+
+// removeSessionByID hides a session from the list (the connector archives it;
+// the transcript file stays on disk). Called with the app lock held.
+func (app *App) removeSessionByID(a *Account, id string) {
+	if s := app.sessions[skey(a, id)]; s != nil && app.active == s {
 		app.active = nil
 	}
+	delete(app.sessions, skey(a, id))
 	go func() {
 		if err := a.client.Call("session/delete", map[string]any{"sessionId": id}, nil); err != nil {
 			app.mu.Lock()
@@ -1129,5 +1134,43 @@ func (app *App) removeSession(s *Session) {
 			app.mu.Unlock()
 		}
 		app.refreshSessions(a)
+	}()
+}
+
+// renameSession sets a session's title (shown at once; saved by the connector).
+// Called with the app lock held.
+func (app *App) renameSession(info *SessionInfo, title string) {
+	title = strings.TrimSpace(title)
+	if title == "" || title == info.Title {
+		return
+	}
+	old := info.Title
+	info.Title = title
+	info.searchKey = strings.ToLower(title + " " + info.CWD)
+	if s := app.findSession(info.Acct, info.ID); s != nil {
+		s.Title = title
+	}
+	a, id := info.Acct, info.ID
+	go func() {
+		var res struct {
+			Title string `json:"title"`
+		}
+		err := a.client.Call("session/set_title", map[string]any{"sessionId": id, "title": title}, &res)
+		app.mu.Lock()
+		if err != nil {
+			info.Title = old
+			info.searchKey = strings.ToLower(old + " " + info.CWD)
+			if s := app.findSession(a, id); s != nil {
+				s.Title = old
+			}
+			app.setToast("Could not rename: " + err.Error())
+		} else if res.Title != "" && res.Title != title { // the connector may tidy the title
+			info.Title = res.Title
+			if s := app.findSession(a, id); s != nil {
+				s.Title = res.Title
+			}
+		}
+		app.mu.Unlock()
+		app.invalidate()
 	}()
 }
