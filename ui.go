@@ -90,6 +90,8 @@ type UI struct {
 	renaming      *SessionInfo
 	renameEd      widget.Editor
 	testRowDone   bool
+	recallIdx     int    // which earlier message ↑ brought back (0 = none)
+	recallText    string // its text, to tell whether the box was edited since
 	accts         accountsScreen
 	pickerDraft   *acctDraft // accounts-screen card that opened the theme picker
 	accentBtns    []*widget.Clickable
@@ -1127,6 +1129,7 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 			}
 		}
 	}
+	u.recallKeys(gtx, s)
 	// → or Tab on an empty box takes Claude's suggested next prompt
 	if u.editor.Len() == 0 && s.Suggestion != "" && !s.Busy {
 		for {
@@ -2013,4 +2016,60 @@ func (u *UI) layoutMissingDir(gtx C, it *Item) D {
 			)
 		})
 	})
+}
+
+// recallKeys: ↑ in an empty message box brings back your previous message (with
+// its images) to edit and resend; ↑/↓ again walk older/newer while it's unedited.
+func (u *UI) recallKeys(gtx C, s *Session) {
+	unedited := u.recallIdx > 0 && u.editor.Text() == u.recallText
+	if !unedited {
+		u.recallIdx = 0
+	}
+	if u.editor.Len() != 0 && !unedited {
+		return
+	}
+	var mine []*Item
+	for _, it := range s.Items {
+		if it.Kind == KUser && (strings.TrimSpace(it.Text) != "" || len(it.Imgs) > 0) {
+			mine = append(mine, it)
+		}
+	}
+	if len(mine) == 0 {
+		return
+	}
+	filters := []event.Filter{key.Filter{Focus: &u.editor, Name: key.NameUpArrow}}
+	if unedited {
+		filters = append(filters, key.Filter{Focus: &u.editor, Name: key.NameDownArrow})
+	}
+	for {
+		ev, ok := gtx.Event(filters...)
+		if !ok {
+			break
+		}
+		e, ok := ev.(key.Event)
+		if !ok || e.State != key.Press {
+			continue
+		}
+		idx := u.recallIdx
+		if e.Name == key.NameUpArrow {
+			idx = min(idx+1, len(mine))
+		} else {
+			idx--
+		}
+		if idx <= 0 { // past the newest: back to an empty box
+			u.recallIdx, u.recallText = 0, ""
+			u.editor.SetText("")
+			u.pending = nil
+			continue
+		}
+		it := mine[len(mine)-idx]
+		u.recallIdx, u.recallText = idx, it.Text
+		u.editor.SetText(it.Text)
+		n := len([]rune(it.Text))
+		u.editor.SetCaret(n, n)
+		u.pending = nil
+		for _, im := range it.Imgs {
+			u.pending = append(u.pending, &Attachment{Mime: im.Mime, Data: im.Data})
+		}
+	}
 }

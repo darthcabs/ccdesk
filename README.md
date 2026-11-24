@@ -182,7 +182,9 @@ Then start **ccdesk** from your app launcher, or run `ccdesk`.
 |---|---|
 | Send | Enter |
 | New line | Shift+Enter |
-| Stop Claude | Esc, or the **Stop** button |
+| Stop Claude | Esc, or the **Stop** button (shown while Claude works and the box is empty) |
+| Add to the running task | type while Claude works, then Enter or **Send** |
+| Bring back a previous message | ↑ in an empty message box (↑ ↓ to step through older ones) |
 | Paste image | Ctrl+V |
 | Take the suggested prompt | → or Tab, while the message box is empty |
 | Slash-command list | type `/`, then ↑ ↓ to choose, Tab or Enter to insert, Esc to close |
