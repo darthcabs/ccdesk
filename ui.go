@@ -1229,7 +1229,10 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 	}
 	u.pending = keep
 
-	if submit && !s.Busy && s.Acct.Ready && (strings.TrimSpace(u.editor.Text()) != "" || len(u.pending) > 0) {
+	// While Claude works, a message joins the running turn (like typing in the CLI).
+	// A brand-new session can't take one until it exists.
+	canSend := !s.Busy || s.ID != ""
+	if submit && canSend && s.Acct.Ready && (strings.TrimSpace(u.editor.Text()) != "" || len(u.pending) > 0) {
 		if s.ID == "" {
 			s.CWD = expandHome(strings.TrimSpace(u.dirEd.Text()))
 			s.Title = "New session"
@@ -1311,6 +1314,8 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 								hint := u.withAcct("Message Claude (%s)", "Message Claude", s.Acct) + " — Enter to send, Shift+Enter for a new line, Ctrl+V pastes images"
 								if !s.Acct.Ready {
 									hint = "Connecting to " + s.Acct.Cfg.Name + " account…"
+								} else if s.Busy && s.ID != "" {
+									hint = "Claude is working — type to add to the current task, Esc to stop"
 								} else if s.Suggestion != "" && !s.Busy {
 									hint = s.Suggestion + "   →"
 								}
@@ -1352,7 +1357,8 @@ func (u *UI) layoutComposer(gtx C, s *Session) D {
 							}),
 							layout.Flexed(1, func(gtx C) D { return D{Size: image.Pt(gtx.Constraints.Min.X, 0)} }),
 							layout.Rigid(func(gtx C) D {
-								if s.Busy {
+								// one button: Stop while Claude works and nothing is typed, else Send
+								if s.Busy && u.editor.Len() == 0 && len(u.pending) == 0 {
 									return u.button(gtx, &u.stopBtn, "Stop", u.p.Red, onColor(u.p.Red), false)
 								}
 								return u.button(gtx, &u.sendBtn, "Send", u.p.Accent, u.p.OnAcc, false)

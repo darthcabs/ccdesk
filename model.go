@@ -182,16 +182,19 @@ type Command struct {
 }
 
 type Session struct {
-	Acct        *Account
-	ID          string
-	CWD         string
-	Title       string
-	Items       []*Item
-	byTool      map[string]*Item
-	Loading     bool
-	Loaded      bool
-	Busy        bool
-	BusySince   time.Time
+	Acct      *Account
+	ID        string
+	CWD       string
+	Title     string
+	Items     []*Item
+	byTool    map[string]*Item
+	Loading   bool
+	Loaded    bool
+	Busy      bool
+	BusySince time.Time
+	// inFlight counts prompts awaiting a result. Messages sent mid-turn are folded
+	// into the running turn, so Claude is busy until the last one returns.
+	inFlight    int
 	Used        int    // context tokens in use (from usage_update)
 	pendingNote string // notice shown once the session has (re)loaded
 	// Suggestion is Claude's predicted next prompt (shown greyed in the composer).
@@ -892,19 +895,12 @@ func (app *App) sendPrompt(s *Session, text string, imgs []*Attachment) {
 	}
 	s.add(&Item{Kind: KUser, Text: text, Imgs: imgs})
 	s.Suggestion = ""
-	s.Busy = true
-	s.BusySince = time.Now()
-	go func() { // keep the elapsed-time status ticking
-		for range time.Tick(time.Second) {
-			app.mu.Lock()
-			busy := s.Busy
-			app.mu.Unlock()
-			if !busy {
-				return
-			}
-			app.invalidate()
-		}
-	}()
+	s.inFlight++
+	if !s.Busy {
+		s.Busy = true
+		s.BusySince = time.Now()
+		go app.tickWhileBusy(s)
+	}
 	s.follow = true
 	a := s.Acct
 	go func() {
@@ -921,6 +917,7 @@ func (app *App) sendPrompt(s *Session, text string, imgs []*Attachment) {
 			app.mu.Lock()
 			if err != nil {
 				s.Busy = false
+				s.inFlight = 0
 				s.add(&Item{Kind: KError, Text: "Could not start session: " + err.Error()})
 				app.mu.Unlock()
 				app.invalidate()
@@ -950,6 +947,15 @@ func (app *App) sendPrompt(s *Session, text string, imgs []*Attachment) {
 		}
 		err := a.client.Call("session/prompt", map[string]any{"sessionId": s.ID, "prompt": blocks}, &res)
 		app.mu.Lock()
+		s.inFlight--
+		if s.inFlight > 0 { // a later message took over this turn; it reports the end
+			if err != nil {
+				s.add(&Item{Kind: KError, Text: err.Error()})
+			}
+			app.mu.Unlock()
+			app.invalidate()
+			return
+		}
 		s.Busy = false
 		if l := s.last(); l != nil && l.Kind == KThought && !l.Started.IsZero() && l.Ended.IsZero() {
 			l.Ended = time.Now()
@@ -1173,4 +1179,17 @@ func (app *App) renameSession(info *SessionInfo, title string) {
 		app.mu.Unlock()
 		app.invalidate()
 	}()
+}
+
+// tickWhileBusy redraws every second so the status line's timer moves.
+func (app *App) tickWhileBusy(s *Session) {
+	for range time.Tick(time.Second) {
+		app.mu.Lock()
+		busy := s.Busy
+		app.mu.Unlock()
+		if !busy {
+			return
+		}
+		app.invalidate()
+	}
 }
